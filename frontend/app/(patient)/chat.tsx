@@ -4,7 +4,6 @@ import {
     Animated, ActivityIndicator, Alert,
 } from 'react-native';
 import { useRouter, useLocalSearchParams } from 'expo-router';
-import Constants from 'expo-constants';
 import { useAudioRecorder, RecordingPresets, requestRecordingPermissionsAsync } from 'expo-audio';
 import * as Speech from 'expo-speech';
 import AsyncStorage from '@react-native-async-storage/async-storage';
@@ -12,7 +11,6 @@ import api from '../../src/services/api';
 import {
     sendMessage,
     resetConversation,
-    setGroqKey,
     transcribeAudio,
     detectEmotionFromText,
     initializeOrito,
@@ -138,9 +136,6 @@ export default function ChatScreen() {
 
         //------This Function handles the Init---------
         const init = async () => {
-            const apiKey = Constants.expoConfig?.extra?.groqApiKey || '';
-            setGroqKey(apiKey);
-
             await initializeOrito();
             if (disposed) return;
 

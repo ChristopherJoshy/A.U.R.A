@@ -8,7 +8,7 @@ logger = logging.getLogger(__name__)
 
 #------This Class handles the Settings Configuration---------
 class Settings(BaseSettings):
-    backend_url: str = "http://localhost:8000"
+    backend_url: str = "http://localhost:8001"
     patient_uid: str = ""
     backend_auth_token: str = ""
     hf_token: str = ""
@@ -26,6 +26,8 @@ class Settings(BaseSettings):
     backend_max_retries: int = 10
     websocket_timeout: float = 300.0
     demo_mode: bool = False
+    auto_face_recognition_enabled: bool = False
+    auto_face_recognition_interval: int = 30
 
 #------This Function validates the patient UID---------
     @field_validator("patient_uid")
@@ -86,3 +88,5 @@ logger.info(f"  patient_uid: {settings.patient_uid[:8] + '...' if settings.patie
 logger.info(f"  http_port: {settings.http_port}")
 logger.info(f"  demo_mode: {settings.demo_mode}")
 logger.info(f"  face_confidence_threshold: {settings.face_confidence_threshold}")
+logger.info(f"  auto_face_recognition_enabled: {settings.auto_face_recognition_enabled}")
+logger.info(f"  auto_face_recognition_interval: {settings.auto_face_recognition_interval}s")

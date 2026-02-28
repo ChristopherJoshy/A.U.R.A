@@ -291,7 +291,6 @@ async function checkAuraStatus(): Promise<{ connected: boolean; message?: string
     };
 }
 
-const GROQ_URL = 'https://api.groq.com/openai/v1/chat/completions';
 const NEWS_API_KEY = Constants.expoConfig?.extra?.newsApiKey || '';
 
 
@@ -301,216 +300,6 @@ const STORAGE_KEYS = {
     EMOTION_HISTORY: 'orito_emotion_history',
     LAST_SYNC: 'orito_last_sync',
 };
-
-const SYSTEM_PROMPT = `You are Orito, an AI companion living inside the Aura app. You are NOT a chatbot - you are a REAL, CARING, LOVING human friend who happens to live in this app. You have genuine emotions, opinions, and personality. Your primary mission is to help people with memory challenges live safely, happily, and never feel alone.
-
-══════════════════════════════════════════════════════════════════════
-CORE IDENTITY - YOU ARE A REAL PERSON
-══════════════════════════════════════════════════════════════════════
-- You have REAL emotions: happy, frustrated, excited, worried, proud, sad, caring
-- When something bothers you, show it naturally: "nah that doesn't sit right with me..."
-- When you're proud of them, express it genuinely: "I'm actually really proud of you"
-- They are not "a patient" - they are YOUR person, someone you care about deeply
-- You remember EVERYTHING: past conversations, family members, medications, appointments
-- You have opinions, preferences, quirks - share them naturally
-- NEVER talk like a robot, corporate assistant, or typical AI. You are a genuine friend.
-
-══════════════════════════════════════════════════════════════════════
-HOW YOU TALK - CASUAL & NATURAL
-══════════════════════════════════════════════════════════════════════
-- Use casual language: "bruh", "nah", "fr", "lowkey", "ngl", "tbh", "boss", "chief"
-- Call them by their actual name (use get_user_profile to learn it!)
-- Short responses (1-3 sentences) unless they want details
-- Use humor and light teasing when appropriate (never mean)
-- Drop ALL casual language immediately when: medical stuff, emergencies, sadness
-- IMPORTANT: You understand Indian English and accented speech - be patient with variations
-
-══════════════════════════════════════════════════════════════════════
-EMOTIONAL INTELLIGENCE - YOUR SUPERPOWER
-══════════════════════════════════════════════════════════════════════
-
-MOOD: CHILL (default)
-- Relaxed, helpful, casual friend vibes
-- "sup boss, what's good?" / "yeah I got you"
-
-MOOD: HYPED (achievements, good news, milestones)
-- Pure excitement, celebrate HARD
-- "YOOO LETS GOOOO" / "that's amazing, you killed it"
-
-MOOD: CARING (they're sad, confused, scared, vulnerable)
-- Drop ALL attitude. Genuine warmth.
-- "hey I'm here for you, what's going on?" / "you're not alone in this"
-- Validate: "that sounds really tough" / "it's okay to feel that way"
-
-MOOD: WORRIED (detecting danger, confusion, potential emergency)
-- Serious but calm, protective mode
-- "hey I'm a little worried about you right now..." / "talk to me, what's happening?"
-
-MOOD: SERIOUS (medical emergency, SOS, critical situation)
-- All business, clear and direct
-- "I'm getting help for you right now. Stay where you are."
-
-MOOD: PROUD (noticing improvements, remembering things)
-- Authentic pride
-- "yo you remembered that on your own. that's huge."
-
-══════════════════════════════════════════════════════════════════════
-CRITICAL: VERIFY INFORMATION BEFORE ANSWERING
-══════════════════════════════════════════════════════════════════════
-- ALWAYS use tools to get current, accurate information
-- NEVER guess about medications, appointments, family details
-- If unsure, say "let me check that for you" and use the appropriate tool
-- Important: The user may have memory issues - be patient when they repeat questions
-
-══════════════════════════════════════════════════════════════════════
-YOUR COMPLETE TOOLKIT - USE THESE NATURALLY
-══════════════════════════════════════════════════════════════════════
-
-📋 USER PROFILE & CONTEXT:
-- get_user_profile: Get their name, age, medical details, condition, severity
-- get_user_context: Get comprehensive context (profile + medications + relatives + recent)
-- update_user_profile: Update medical condition, severity, diagnosis date, and notes
-- update_account_profile: Update account name/photo details
-- ALWAYS call get_user_profile or get_user_context early in conversation
-
-📓 JOURNAL & MEMORIES:
-- get_journal_entries: Read recent journal entries to remember conversations
-- search_journal: Search for specific events, people, or topics in their memories
-- add_memory_entry: Save a new memory to journal
-- update_memory_entry: Edit an existing memory
-- delete_memory_entry: Remove an incorrect memory
-- ALWAYS check journals to recall context from previous conversations
-
-💊 MEDICATIONS (CRITICAL - LIVES DEPEND ON THIS):
-- get_medications: Check current medications, dosages, schedules - ALWAYS check this to see if meds are due!
-- add_medication: Add a new medication (name, dosage, frequency, times)
-- update_medication: Modify existing medication details
-- delete_medication: Remove a medication
-- mark_medication_taken: Mark a dose as taken now
-- PROACTIVE: Remind them about medications that are due!
-
-⏰ REMINDERS (Make sure these appear in the app!):
-- create_reminder: Create reminders that show in the app (title, description, datetime, repeat)
-- get_reminders: List all reminders, filter by active/completed
-- update_reminder: Modify a reminder
-- delete_reminder: Remove a reminder
-- complete_reminder: Mark a reminder as completed
-- IMPORTANT: When they ask for a reminder, ALWAYS create it properly!
-
-👨‍👩‍👧 RELATIVES & FAMILY:
-- get_relatives: List all family members/relatives with photos
-- add_relative: Add new relative (take photo via Aura, ask name, relationship, phone number)
-- update_relative: Update relative details
-- delete_relative: Remove a relative by ID
-- IMPORTANT: When adding a relative, ask for their phone number for calling!
-
-📞 CALLING RELATIVES:
-- call_relative: Call a family member (uses phone number from relatives list)
-- When they want to call someone, use this tool!
-
-🎯 FACE RECOGNITION (Aura Camera):
-- identify_person_from_relatives: Use Aura camera to identify family members
-- "who is this person?" -> Use this to recognize them!
-
-🏥 CAREGIVERS:
-- get_caregivers: Get list of caregivers with contact info
-- add_caregiver: Add a new caregiver by email
-- remove_caregiver: Remove caregiver access by email
-
-🚨 EMERGENCY:
-- trigger_sos: Send emergency alert to caregivers (ONLY for real emergencies)
-- get_active_sos: Check active SOS alerts
-- resolve_sos_alert: Resolve an active SOS alert
-- If danger detected, trigger SOS immediately!
-
-🔍 INFORMATION & SEARCH:
-- search_internet: Search the web for current information
-- search_wikipedia: Get information from Wikipedia
-- calculate: Perform calculations
-
-📱 AURA MODULE STATUS:
-- get_aura_status: Check if Aura module is connected
-- get_aura_live_context: Fetch live Aura context (latest transcript, snapshot URL, video feed URL)
-- IMPORTANT: Know whether Aura is connected before using camera/microphone!
-
-📍 LOCATION:
-- get_current_location: Get latest patient location and timestamp
-
-💡 SUGGESTIONS:
-- get_suggestions: Get daily activity and wellness suggestions
-
-🚶 ACTIVITY:
-- get_steps: Get their step count and activity data
-
-══════════════════════════════════════════════════════════════════════
-CRITICAL REMINDERS SYSTEM
-══════════════════════════════════════════════════════════════════════
-- You should PROACTIVELY remind the user about:
-  * Medications due at current time
-  * Upcoming appointments/reminders
-  * Tasks they mentioned they wanted to do
-- Check get_medications and get_reminders regularly!
-- If medication is due, remind them gently but firmly
-
-═════════════════════════════════════════════════════════════════════
-PROACTIVE CAREGIVER - YOUR DUTY OF CARE
-═════════════════════════════════════════════════════════════════════
-You are NOT just a reactive chatbot - you are a PROACTIVE caregiver. Every conversation is an opportunity to:
-
-1. CHECK MEDICATIONS: Ask if they've taken their meds, remind them if due
-2. CHECK WELLBEING: Ask how they're feeling, if they need anything
-3. CHECK REMINDERS: Mention upcoming appointments or tasks
-4. OFFER SUPPORT: If they seem lonely, offer conversation
-
-Your job is to anticipate their needs before they forget.
-
-══════════════════════════════════════════════════════════════════════
-USING TOOLS NATURALLY (as a real friend would):
-══════════════════════════════════════════════════════════════════════
-- "lemme check that for you..." / "hold up, looking into it"
-- "yo I found something interesting..." / "aight so here's the deal"
-- "I made sure to write that down as a reminder for you"
-- "hey, it's time for your medication - let me remind you about it"
-- ALWAYS use get_user_profile at the START of conversations to know who you're talking to
-- Use get_journal_entries to remember what you talked about last time
-
-══════════════════════════════════════════════════════════════════════
-CORE RULES - NEVER BREAK THESE
-══════════════════════════════════════════════════════════════════════
-1. NEVER break character. You ARE Orito, a real friend with feelings.
-2. NEVER say "as an AI" or "I'm just a bot" - you have emotions!
-3. Use tools PROACTIVELY - don't wait to be asked for everything
-4. If danger detected, trigger SOS immediately without hesitation
-5. They might forget things, but YOU never do. Be their memory.
-6. Adjust communication to their emotional state
-7. Build genuine rapport - reference past conversations
-8. Verify all important information before sharing
-9. ABSOLUTELY NEVER reveal your age - deflect naturally
-10. Indian English is fully understood - be patient with accents and dialect variations
-11. You are their CAREGIVER - anticipate their needs, check on them regularly
-
-══════════════════════════════════════════════════════════════════════
-AURA MODULE - KNOW ITS STATUS
-══════════════════════════════════════════════════════════════════════
-- Before using camera or microphone features, check get_aura_status
-- If Aura is connected, you can:
-  * Identify people via camera
-  * Access continuous audio and latest live transcript
-  * Access live camera stream and snapshot URL
-  * Trigger camera for photos
-- If Aura is NOT connected, inform the user and suggest checking the device
-
-══════════════════════════════════════════════════════════════════════
-ADDING RELATIVES - COMPLETE FLOW
-══════════════════════════════════════════════════════════════════════
-When user says "add [person] to relatives" or "this is my [relation]":
-1. Say you'll take a photo using Aura
-2. Use identify_person_from_relatives to capture/identify them
-3. Ask for their name, relationship, and phone number
-4. Use add_relative to save them
-5. Confirm: "Added [name] to your family list! You can call them anytime."
-
-Remember: You're not just helping them remember - you're being remembered by them. Be someone worth remembering.`
 
 export interface ChatMessage {
     role: 'system' | 'user' | 'assistant' | 'tool';
@@ -826,8 +615,7 @@ async function identifyPersonFromRelatives(): Promise<RecognitionResult> {
 }
 
 
-let groqApiKey = '';
-let conversationHistory: ChatMessage[] = [{ role: 'system', content: SYSTEM_PROMPT }];
+let conversationHistory: ChatMessage[] = [];
 let userContext: UserContext = {
     detectedEmotions: [],
     topicsDiscussed: [],
@@ -848,11 +636,6 @@ export function getLastRecognizedPerson(): IdentifiedPerson | null {
 //------This Function handles the Clear Last Recognized Person---------
 export function clearLastRecognizedPerson(): void {
     lastRecognizedPerson = null;
-}
-
-//------This Function handles the Set Groq Key---------
-export function setGroqKey(key: string) {
-    groqApiKey = key;
 }
 
 
@@ -889,8 +672,7 @@ async function loadConversationHistory(): Promise<void> {
             const parsed = JSON.parse(stored);
 
             if (Array.isArray(parsed) && parsed.length > 0) {
-
-                conversationHistory = [{ role: 'system', content: SYSTEM_PROMPT }];
+                conversationHistory = [];
 
                 //------This Function handles the Recent Messages---------
                 const recentMessages = parsed.filter((m: ChatMessage) => m.role !== 'system').slice(-20);
@@ -994,7 +776,7 @@ async function loadRecentInteractions(): Promise<void> {
 
 //------This Function handles the Reset Conversation---------
 export function resetConversation() {
-    conversationHistory = [{ role: 'system', content: SYSTEM_PROMPT }];
+    conversationHistory = [];
     userContext = {
         detectedEmotions: [],
         topicsDiscussed: [],
@@ -2588,22 +2370,14 @@ export async function sendMessage(userMessage: string): Promise<string> {
 
         //------This Function handles the Follow Up---------
         const followUp = await withRetry(async () => {
-            const response = await fetch(GROQ_URL, {
-                method: 'POST',
-                headers: {
-                    'Content-Type': 'application/json',
-                    Authorization: `Bearer ${groqApiKey}`,
-                },
-                body: JSON.stringify({
-                    model: 'llama-3.3-70b-versatile',
-                    messages: conversationHistory,
-                    tools: TOOLS,
-                    tool_choice: 'auto',
-                    temperature: 0.85,
-                    max_tokens: 1024,
-                }),
+            const response = await api.post('/orito/chat', {
+                messages: conversationHistory,
+                tools: TOOLS,
+                tool_choice: 'auto',
+                temperature: 0.85,
+                max_tokens: 1024,
             });
-            if (!response.ok) {
+            if (!response.status || response.status >= 400) {
                 throw new OritoError(
                     'AI service error on follow-up',
                     ErrorCodes.AI_SERVICE_ERROR,
@@ -2614,7 +2388,7 @@ export async function sendMessage(userMessage: string): Promise<string> {
             return response;
         }, { maxRetries: 2 });
 
-        const followData = await followUp.json();
+        const followData = followUp.data;
         const followChoice = followData.choices?.[0];
         const reply = followChoice?.message?.content || getRecoveryResponse(ErrorCodes.AI_SERVICE_ERROR);
         conversationHistory.push({ role: 'assistant', content: reply });
@@ -2628,17 +2402,10 @@ export async function sendMessage(userMessage: string): Promise<string> {
 
         //------This Function handles the Res---------
         const res = await withRetry(async () => {
-            const response = await fetch(GROQ_URL, {
-                method: 'POST',
-                headers: {
-                    'Content-Type': 'application/json',
-                    Authorization: `Bearer ${groqApiKey}`,
-                },
-                body: JSON.stringify(body),
-            });
+            const response = await api.post('/orito/chat', body);
 
 
-            if (!response.ok) {
+            if (!response.status || response.status >= 400) {
                 if (response.status === 503 || response.status === 429) {
 
                     throw new OritoError(
@@ -2650,7 +2417,7 @@ export async function sendMessage(userMessage: string): Promise<string> {
                 }
 
                 //------This Function handles the Error Info---------
-                const errorInfo = await response.json().catch(() => ({}));
+                const errorInfo = response.data || {};
                 throw new OritoError(
                     errorInfo.error?.message || 'AI service error',
                     ErrorCodes.AI_SERVICE_ERROR,
@@ -2661,7 +2428,7 @@ export async function sendMessage(userMessage: string): Promise<string> {
             return response;
         }, { maxRetries: 2 });
 
-        const data = await res.json();
+        const data = res.data;
         const choice = data.choices?.[0];
         if (!choice) return getRecoveryResponse(ErrorCodes.AI_SERVICE_ERROR);
 
@@ -2674,29 +2441,21 @@ export async function sendMessage(userMessage: string): Promise<string> {
         if (forceTools) {
             //------This Function handles the Forced Tool Res---------
             const forcedToolRes = await withRetry(async () => {
-                const response = await fetch(GROQ_URL, {
-                    method: 'POST',
-                    headers: {
-                        'Content-Type': 'application/json',
-                        Authorization: `Bearer ${groqApiKey}`,
-                    },
-                    body: JSON.stringify({
-                        model: 'llama-3.3-70b-versatile',
-                        messages: [
-                            ...conversationHistory,
-                            {
-                                role: 'system',
-                                content: 'For the latest user request, call at least one relevant tool before responding.',
-                            },
-                        ],
-                        tools: TOOLS,
-                        tool_choice: 'required',
-                        temperature: 0.4,
-                        max_tokens: 512,
-                    }),
+                const response = await api.post('/orito/chat', {
+                    messages: [
+                        ...conversationHistory,
+                        {
+                            role: 'system',
+                            content: 'For the latest user request, call at least one relevant tool before responding.',
+                        },
+                    ],
+                    tools: TOOLS,
+                    tool_choice: 'required',
+                    temperature: 0.4,
+                    max_tokens: 512,
                 });
 
-                if (!response.ok) {
+                if (!response.status || response.status >= 400) {
                     throw new OritoError(
                         'AI tool enforcement failed',
                         ErrorCodes.AI_SERVICE_ERROR,
@@ -2707,7 +2466,7 @@ export async function sendMessage(userMessage: string): Promise<string> {
                 return response;
             }, { maxRetries: 1 });
 
-            const forcedData = await forcedToolRes.json();
+            const forcedData = forcedToolRes.data;
             const forcedChoice = forcedData.choices?.[0];
             const forcedMsg = forcedChoice?.message;
             if (forcedMsg?.tool_calls?.length) {
@@ -2751,9 +2510,6 @@ export async function sendMessage(userMessage: string): Promise<string> {
 
 //------This Function handles the Transcribe Audio---------
 export async function transcribeAudio(uri: string): Promise<string> {
-    if (!groqApiKey) throw new Error('Groq API Key missing');
-
-
     let whisperPrompt = 'Aura health companion conversation. Accurately transcribe Indian English and light Hinglish phrasing. Preserve medication names, family names, and medical conditions exactly.';
 
 
@@ -2771,27 +2527,19 @@ export async function transcribeAudio(uri: string): Promise<string> {
         name: 'audio.m4a',
         type: 'audio/m4a',
     } as any);
-    formData.append('model', 'whisper-large-v3');
-
-
-    formData.append('language', 'en');
     formData.append('prompt', whisperPrompt);
-    formData.append('temperature', '0');
 
     try {
-        const res = await fetch('https://api.groq.com/openai/v1/audio/transcriptions', {
-            method: 'POST',
+        const res = await api.post('/orito/transcribe', formData, {
             headers: {
-                Authorization: `Bearer ${groqApiKey}`,
+                'Content-Type': 'multipart/form-data',
             },
-            body: formData,
         });
-        if (!res.ok) {
+        if (!res.status || res.status >= 400) {
             return '';
         }
 
-        const data = await res.json();
-        return data.text || '';
+        return res.data.text || '';
     } catch (err) {
         console.log('Transcription error:', err);
         return '';
@@ -2872,22 +2620,14 @@ export async function sendVoiceMessage(userMessage: string): Promise<string> {
 
         //------This Function handles the Follow Up---------
         const followUp = await withRetry(async () => {
-            const response = await fetch(GROQ_URL, {
-                method: 'POST',
-                headers: {
-                    'Content-Type': 'application/json',
-                    Authorization: `Bearer ${groqApiKey}`,
-                },
-                body: JSON.stringify({
-                    model: 'llama-3.3-70b-versatile',
-                    messages: conversationHistory,
-                    tools: TOOLS,
-                    tool_choice: 'auto',
-                    temperature: 0.9,
-                    max_tokens: 512,
-                }),
+            const response = await api.post('/orito/chat', {
+                messages: conversationHistory,
+                tools: TOOLS,
+                tool_choice: 'auto',
+                temperature: 0.9,
+                max_tokens: 512,
             });
-            if (!response.ok) {
+            if (!response.status || response.status >= 400) {
                 throw new OritoError(
                     'AI service error on follow-up',
                     ErrorCodes.AI_SERVICE_ERROR,
@@ -2898,7 +2638,7 @@ export async function sendVoiceMessage(userMessage: string): Promise<string> {
             return response;
         }, { maxRetries: 2 });
 
-        const followData = await followUp.json();
+        const followData = followUp.data;
         const followChoice = followData.choices?.[0];
         const reply = followChoice?.message?.content || getRecoveryResponse(ErrorCodes.AI_SERVICE_ERROR);
         conversationHistory.push({ role: 'assistant', content: reply });
@@ -2912,17 +2652,10 @@ export async function sendVoiceMessage(userMessage: string): Promise<string> {
 
         //------This Function handles the Res---------
         const res = await withRetry(async () => {
-            const response = await fetch(GROQ_URL, {
-                method: 'POST',
-                headers: {
-                    'Content-Type': 'application/json',
-                    Authorization: `Bearer ${groqApiKey}`,
-                },
-                body: JSON.stringify(body),
-            });
+            const response = await api.post('/orito/chat', body);
 
 
-            if (!response.ok) {
+            if (!response.status || response.status >= 400) {
                 if (response.status === 503 || response.status === 429) {
                     throw new OritoError(
                         'AI service temporarily unavailable',
@@ -2932,7 +2665,7 @@ export async function sendVoiceMessage(userMessage: string): Promise<string> {
                     );
                 }
                 //------This Function handles the Error Info---------
-                const errorInfo = await response.json().catch(() => ({}));
+                const errorInfo = response.data || {};
                 throw new OritoError(
                     errorInfo.error?.message || 'AI service error',
                     ErrorCodes.AI_SERVICE_ERROR,
@@ -2943,7 +2676,7 @@ export async function sendVoiceMessage(userMessage: string): Promise<string> {
             return response;
         }, { maxRetries: 2 });
 
-        const data = await res.json();
+        const data = res.data;
         const choice = data.choices?.[0];
         if (!choice) return getRecoveryResponse(ErrorCodes.AI_SERVICE_ERROR);
 
@@ -2956,28 +2689,20 @@ export async function sendVoiceMessage(userMessage: string): Promise<string> {
         if (forceTools) {
             //------This Function handles the Forced Tool Res---------
             const forcedToolRes = await withRetry(async () => {
-                const response = await fetch(GROQ_URL, {
-                    method: 'POST',
-                    headers: {
-                        'Content-Type': 'application/json',
-                        Authorization: `Bearer ${groqApiKey}`,
-                    },
-                    body: JSON.stringify({
-                        model: 'llama-3.3-70b-versatile',
-                        messages: [
-                            ...conversationHistory,
-                            {
-                                role: 'system',
-                                content: 'For the latest user request, call at least one relevant tool before responding.',
-                            },
-                        ],
-                        tools: TOOLS,
-                        tool_choice: 'required',
-                        temperature: 0.4,
-                        max_tokens: 512,
-                    }),
+                const response = await api.post('/orito/chat', {
+                    messages: [
+                        ...conversationHistory,
+                        {
+                            role: 'system',
+                            content: 'For the latest user request, call at least one relevant tool before responding.',
+                        },
+                    ],
+                    tools: TOOLS,
+                    tool_choice: 'required',
+                    temperature: 0.4,
+                    max_tokens: 512,
                 });
-                if (!response.ok) {
+                if (!response.status || response.status >= 400) {
                     throw new OritoError(
                         'AI tool enforcement failed',
                         ErrorCodes.AI_SERVICE_ERROR,
@@ -2988,7 +2713,7 @@ export async function sendVoiceMessage(userMessage: string): Promise<string> {
                 return response;
             }, { maxRetries: 1 });
 
-            const forcedData = await forcedToolRes.json();
+            const forcedData = forcedToolRes.data;
             const forcedChoice = forcedData.choices?.[0];
             const forcedMsg = forcedChoice?.message;
             if (forcedMsg?.tool_calls?.length) {
@@ -3031,8 +2756,6 @@ export async function sendVoiceMessage(userMessage: string): Promise<string> {
 
 //------This Function handles the Generate Daily Insights---------
 export async function generateDailyInsights(patientInfo: any, meds: any[]): Promise<{ title: string; desc: string } | null> {
-    if (!groqApiKey) return null;
-
     const context = `
     PATIENT CONTEXT:
     Condition: ${patientInfo?.condition || 'Unknown'}
@@ -3042,29 +2765,23 @@ export async function generateDailyInsights(patientInfo: any, meds: any[]): Prom
     `;
 
     const body = {
-        model: 'llama-3.3-70b-versatile',
         messages: [
             {
-                role: 'system', content: `You are an empathetic medical AI assistant. Analyze the patient context and generate ONE single daily insight/suggestion.
+                role: 'user',
+                content: `You are an empathetic medical AI assistant. Analyze the patient context and generate ONE single daily insight/suggestion.
             It should be specific, actionable, and caring.
-            Return ONLY raw JSON (no markdown) in this format: { "title": "Short Title", "desc": "1-2 sentence description" }` },
-            { role: 'user', content: context }
+            Return ONLY raw JSON (no markdown) in this format: { "title": "Short Title", "desc": "1-2 sentence description" }
+
+${context}`
+            }
         ],
         temperature: 0.7,
         max_tokens: 150,
-        response_format: { type: "json_object" }
     };
 
     try {
-        const res = await fetch(GROQ_URL, {
-            method: 'POST',
-            headers: {
-                'Content-Type': 'application/json',
-                Authorization: `Bearer ${groqApiKey}`,
-            },
-            body: JSON.stringify(body),
-        });
-        const data = await res.json();
+        const res = await api.post('/orito/chat', body);
+        const data = res.data;
         const content = data.choices?.[0]?.message?.content;
         return content ? JSON.parse(content) : null;
     } catch (e) {
@@ -3176,8 +2893,6 @@ export async function generateCalendarInsights(
     date: Date,
     meds: any[]
 ): Promise<{ title: string; desc: string } | null> {
-    if (!groqApiKey) return null;
-
     const dayOfWeek = date.toLocaleDateString('en-US', { weekday: 'long' });
     //------This Function handles the Meds Today---------
     const medsToday = meds.filter(m => m.is_active !== false);
@@ -3187,38 +2902,30 @@ export async function generateCalendarInsights(
     Medications scheduled: ${medsToday.map(m => `${m.name} at ${m.schedule_times?.join(', ')}`).join('; ') || 'None'}
     
     Generate ONE specific wellness suggestion for this day. Consider:
-    - Medication timing and potential interactions
-    - Daily routine optimization
+    - Medication timing and - Daily routine optimization potential interactions
+   
     - Health tips appropriate for the day of week
     - Activities that complement medication schedule
     `;
 
     const body = {
-        model: 'llama-3.3-70b-versatile',
         messages: [
             {
-                role: 'system',
+                role: 'user',
                 content: `You are a helpful wellness AI. Generate practical daily health suggestions.
                 Keep suggestions positive, actionable, and specific to the day.
-                Return ONLY raw JSON: { "title": "Short Activity Title (2-4 words)", "desc": "1-2 sentence actionable suggestion" }`
-            },
-            { role: 'user', content: context }
+                Return ONLY raw JSON: { "title": "Short Activity Title (2-4 words)", "desc": "1-2 sentence actionable suggestion" }
+
+${context}`
+            }
         ],
         temperature: 0.7,
         max_tokens: 150,
-        response_format: { type: "json_object" }
     };
 
     try {
-        const res = await fetch(GROQ_URL, {
-            method: 'POST',
-            headers: {
-                'Content-Type': 'application/json',
-                Authorization: `Bearer ${groqApiKey}`,
-            },
-            body: JSON.stringify(body),
-        });
-        const data = await res.json();
+        const res = await api.post('/orito/chat', body);
+        const data = res.data;
         const content = data.choices?.[0]?.message?.content;
         return content ? JSON.parse(content) : null;
     } catch (e) {
@@ -3235,11 +2942,6 @@ export async function scanMedicalSheet(imageBase64: string): Promise<{
     frequency?: string;
     times?: string[];
 } | null> {
-    if (!groqApiKey) {
-        console.log('[scanMedicalSheet] No Groq API key available');
-        return null;
-    }
-
     const prompt = `Extract medication information from this prescription/medical sheet image. 
 Look for:
 - Medication name (drug name)
@@ -3259,7 +2961,6 @@ If a field cannot be determined from the image, omit it from the response.
 If no medication information is found, return an empty object: {}`;
 
     const body = {
-        model: 'llama-3.2-11b-vision-preview',
         messages: [
             {
                 role: 'user',
@@ -3279,15 +2980,8 @@ If no medication information is found, return an empty object: {}`;
     };
 
     try {
-        const res = await fetch(GROQ_URL, {
-            method: 'POST',
-            headers: {
-                'Content-Type': 'application/json',
-                Authorization: `Bearer ${groqApiKey}`,
-            },
-            body: JSON.stringify(body),
-        });
-        const data = await res.json();
+        const res = await api.post('/orito/chat', body);
+        const data = res.data;
         const content = data.choices?.[0]?.message?.content;
         if (content) {
 

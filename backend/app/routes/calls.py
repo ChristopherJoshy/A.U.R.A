@@ -1,3 +1,7 @@
+# STUB IMPLEMENTATION
+# This module contains stub endpoints for call functionality.
+# Actual call integration (e.g., Twilio, Vonage) is not yet implemented.
+
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, field_validator
 from typing import Optional
@@ -36,4 +40,5 @@ async def initiate_call(
         "user_uid": uid,
         "phone": body.phone,
         "relative_id": body.relative_id,
+        "note": "This is a stub - actual call functionality not yet implemented",
     }

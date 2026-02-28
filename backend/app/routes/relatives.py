@@ -2,6 +2,8 @@ from fastapi import APIRouter, Depends, HTTPException, UploadFile, File
 from pydantic import BaseModel
 from typing import Optional, List
 from app.core.firebase import get_current_user_uid
+from app.core.database import get_aura_modules_db
+from app.db.aura_modules import AuraModulesDB
 from app.models.relative import Relative
 from app.models.user import User
 import base64
@@ -72,6 +74,7 @@ async def upload_photo(
     rel_id: str,
     file: UploadFile = File(...),
     uid: str = Depends(get_current_user_uid),
+    aura_modules_db: AuraModulesDB = Depends(get_aura_modules_db),
 ):
     rel = await Relative.get(rel_id)
     if not rel or rel.patient_uid != uid:
@@ -84,10 +87,15 @@ async def upload_photo(
 
     user = await User.find_one(User.firebase_uid == uid)
     if user and user.aura_module_ip:
+        module_port = 8001
+        module = await aura_modules_db.get_module(uid)
+        if module and module.get("port"):
+            module_port = module["port"]
+        
         try:
             async with httpx.AsyncClient(timeout=10.0) as client:
                 resp = await client.post(
-                    f"http://{user.aura_module_ip}:8001/extract_face",
+                    f"http://{user.aura_module_ip}:{module_port}/extract_face",
                     json={"image_b64": b64},
                 )
                 if resp.status_code == 200:

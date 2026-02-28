@@ -1,12 +1,16 @@
 
+import json
 import os
+import logging
 from datetime import datetime, timedelta
 from typing import List, Dict, Optional
 import httpx
 from ..models.suggestion import Suggestion, SuggestionType
 from ..models.medication import Medication
 from ..models.journal import JournalEntry
-from ..models.user import User
+
+
+logger = logging.getLogger(__name__)
 
 
 GROQ_API_URL = "https://api.groq.com/openai/v1/chat/completions"
@@ -42,12 +46,15 @@ class SuggestionGenerator:
         
         suggestions = []
         for suggestion_dict in suggestions_data:
+            priority_str = suggestion_dict.get("priority", "medium")
+            priority_value = {"low": 0, "medium": 1, "high": 2}.get(priority_str.lower(), 1)
+            
             suggestion = Suggestion(
-                user_id=user_id,
+                user_uid=user_id,
                 type=self._map_type(suggestion_dict.get("type", "general")),
                 title=suggestion_dict.get("title", "Suggestion"),
                 description=suggestion_dict.get("description", ""),
-                priority=suggestion_dict.get("priority", "medium"),
+                priority=priority_value,
                 action_label=suggestion_dict.get("action_label"),
                 context_data=suggestion_dict.get("context_data", {}),
                 expires_at=datetime.utcnow() + timedelta(days=1),  
@@ -140,6 +147,48 @@ Return ONLY valid JSON array format:
     "action_label": "Start Walk"
   }
 ]"""
+
+        try:
+            async with httpx.AsyncClient(timeout=30.0) as client:
+                response = await client.post(
+                    GROQ_API_URL,
+                    headers={
+                        "Authorization": f"Bearer {self.api_key}",
+                        "Content-Type": "application/json",
+                    },
+                    json={
+                        "model": "llama-3.1-8b-instant",
+                        "messages": [
+                            {"role": "system", "content": system_prompt},
+                            {"role": "user", "content": f"Generate suggestions based on this context:\n\n{context}"},
+                        ],
+                        "temperature": 0.7,
+                        "max_tokens": 1000,
+                    },
+                )
+
+                if response.status_code != 200:
+                    logger.error(f"Groq API error: {response.status_code} - {response.text}")
+                    return None
+
+                result = response.json()
+                content = result.get("choices", [{}])[0].get("message", {}).get("content", "[]")
+
+                suggestions_data = json.loads(content)
+                return suggestions_data
+
+        except json.JSONDecodeError as e:
+            logger.error(f"Failed to parse JSON response: {e}")
+            return None
+        except httpx.RequestError as e:
+            logger.error(f"HTTP request failed: {e}")
+            return None
+        except Exception as e:
+            logger.exception(f"Unexpected error in _call_groq_api: {e}")
+            return None
+
+#------This Function maps suggestion type string to enum---------
+    def _map_type(self, type_str: str) -> SuggestionType:
         type_mapping = {
             "medication": SuggestionType.MEDICATION,
             "activity": SuggestionType.ACTIVITY,

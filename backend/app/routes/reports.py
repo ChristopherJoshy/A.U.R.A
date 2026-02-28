@@ -509,7 +509,7 @@ async def get_behavior_alerts(
                 "reviewed": False,
             })
         
-        return alerts
+        return {"alerts": alerts}
     except HTTPException:
         raise
     except Exception as e:

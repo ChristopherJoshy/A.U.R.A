@@ -1,6 +1,10 @@
 import logging
 import socket
 import sys
+import threading
+import subprocess
+import time
+import os
 from contextlib import asynccontextmanager
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
@@ -35,11 +39,63 @@ from app.routes import settings as settings_router
 from app.services.cleanup_task import cleanup_stale_modules
 
 
+GREEN = "\033[92m"
+RED = "\033[91m"
+YELLOW = "\033[93m"
+BLUE = "\033[94m"
+CYAN = "\033[96m"
+RESET = "\033[0m"
+BOLD = "\033[1m"
+
+UPDATE_CHECK_INTERVAL = 300
+
+
 logging.basicConfig(
     level=logging.INFO if settings.environment == "production" else logging.DEBUG,
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
 )
 logger = logging.getLogger(__name__)
+
+
+#------This Function checks for git updates-------
+def check_for_updates():
+    try:
+        subprocess.run(["git", "fetch"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=False)
+        result = subprocess.run(
+            ["git", "log", "--oneline", "HEAD..origin/main"],
+            capture_output=True, text=True, check=False
+        )
+        return bool(result.stdout.strip())
+    except Exception:
+        return False
+
+
+#------This Function pulls updates-------
+def pull_updates():
+    try:
+        subprocess.run(["git", "pull"], check=True)
+        return True
+    except Exception:
+        return False
+
+
+#------This Function monitors for updates in background-------
+def update_monitor():
+    while True:
+        time.sleep(UPDATE_CHECK_INTERVAL)
+        print(f"\n{YELLOW}[UPDATE] Checking for updates...{RESET}")
+        if check_for_updates():
+            print(f"{GREEN}[UPDATE] Updates found! Pulling...{RESET}")
+            if pull_updates():
+                print(f"{GREEN}[UPDATE] Updates pulled. Restarting...{RESET}")
+                os.execv(sys.executable, [sys.executable, "-m", "uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8001"])
+
+
+#------This Function starts the background update monitor-------
+def start_update_monitor():
+    monitor_thread = threading.Thread(target=update_monitor, daemon=True)
+    monitor_thread.start()
+
 
 _cleanup_task = None
 
@@ -117,26 +173,30 @@ async def lifespan(app: FastAPI):
 
     
     logger.info(f"Starting {settings.environment} environment")
+    print(f"{BOLD}{BLUE}A.U.R.A Backend v1.0.0{RESET}")
     
     try:
         init_firebase()
-        logger.info("Firebase initialized")
+        print(f"{GREEN}[OK] Firebase initialized{RESET}")
     except Exception as e:
         logger.error(f"Failed to initialize Firebase: {str(e)}")
         raise
 
     try:
         await connect_db()
-        logger.info("Database connected")
+        print(f"{GREEN}[OK] Database connected{RESET}")
     except Exception as e:
         logger.error(f"Failed to connect to database: {str(e)}")
         raise
+
+    start_update_monitor()
+    print(f"{CYAN}[UPDATE] Auto-update monitor started{RESET}")
 
     
     try:
         aura_modules_db = get_aura_modules_db()
         _cleanup_task = asyncio.create_task(cleanup_stale_modules(aura_modules_db))
-        logger.info("Background cleanup task started")
+        print(f"{GREEN}[OK] Background cleanup task started{RESET}")
     except Exception as e:
         logger.warning(f"Could not start cleanup task: {str(e)}")
 
@@ -146,6 +206,7 @@ async def lifespan(app: FastAPI):
 
     
     logger.info("Shutting down application...")
+    print(f"{YELLOW}[SHUTDOWN] Stopping services...{RESET}")
     if _cleanup_task:
         _cleanup_task.cancel()
         try:
@@ -154,7 +215,7 @@ async def lifespan(app: FastAPI):
             pass
 
     await close_db()
-    logger.info("Application shutdown complete")
+    print(f"{RED}[SHUTDOWN] Application shutdown complete{RESET}")
 
 
 app = FastAPI(
@@ -201,7 +262,7 @@ async def general_exception_handler(request: Request, exc: Exception):
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=settings.cors_list,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],

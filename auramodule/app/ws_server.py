@@ -34,9 +34,151 @@ _latest_transcript: Dict[str, Any] = {
 }
 
 
+_auto_face_recognition_enabled = False
+_auto_face_recognition_task: Optional[asyncio.Task] = None
+_last_known_people: Dict[str, Dict[str, Any]] = {}
+_last_detection_time: float = 0
+_last_auth_token: str = ""
+_last_patient_uid: str = ""
+
+
 CONNECTION_TIMEOUT = settings.websocket_timeout
 
 PING_INTERVAL = 30.0
+
+
+#------This Function checks if auto face recognition should run----------
+def _should_run_auto_recognition() -> bool:
+    return (
+        _auto_face_recognition_enabled 
+        and not _shutting_down 
+        and camera_service.is_running
+    )
+
+
+#------This Function runs the background auto face recognition----------
+async def _run_auto_face_recognition():
+    global _last_detection_time, _last_auth_token, _last_patient_uid
+    
+    logger.info("[AUTO-FACE] Background task started")
+    
+    while not _shutting_down:
+        try:
+            await asyncio.sleep(settings.auto_face_recognition_interval)
+            
+            if not _should_run_auto_recognition():
+                continue
+            
+            if not _connected_clients:
+                logger.debug("[AUTO-FACE] No clients connected, skipping detection")
+                continue
+            
+            current_time = time.time()
+            if current_time - _last_detection_time < settings.auto_face_recognition_interval:
+                continue
+            
+            auth_info = None
+            for ws in _connected_clients:
+                auth = _session_auth.get(ws)
+                if auth and auth.get("auth_token") and auth.get("patient_uid"):
+                    auth_info = auth
+                    break
+            
+            if not auth_info:
+                continue
+            
+            patient_uid = auth_info.get("patient_uid", "")
+            auth_token = auth_info.get("auth_token", "")
+            
+            _last_auth_token = auth_token
+            _last_patient_uid = patient_uid
+            
+            frame = camera_service.get_frame()
+            if frame is None:
+                logger.debug("[AUTO-FACE] No frame available")
+                continue
+            
+            try:
+                results = await identify_person(frame, patient_uid, auth_token)
+            except Exception as e:
+                logger.error(f"[AUTO-FACE] Identification error: {e}")
+                continue
+            
+            if not results:
+                continue
+            
+            for person in results:
+                if person.get("name") and person.get("name") != "unknown":
+                    person_name = person.get("name", "")
+                    _last_known_people[person_name] = {
+                        "name": person_name,
+                        "relationship": person.get("relationship", ""),
+                        "confidence": person.get("confidence", 0.0),
+                        "last_seen": current_time,
+                        "person_id": person.get("person_id", ""),
+                    }
+                    
+                    notification = {
+                        "type": "face_detected",
+                        "person": {
+                            "name": person_name,
+                            "relationship": person.get("relationship", ""),
+                            "confidence": person.get("confidence", 0.0),
+                        },
+                        "timestamp": time.strftime("%Y-%m-%dT%H:%M:%S", time.localtime(current_time)),
+                    }
+                    
+                    await broadcast(notification)
+                    logger.info(f"[AUTO-FACE] Broadcast: {person_name} identified")
+            
+            _last_detection_time = current_time
+            
+            if _last_known_people:
+                visible_people = []
+                for name, data in _last_known_people.items():
+                    if current_time - data.get("last_seen", 0) < 300:
+                        visible_people.append(data)
+                
+                if visible_people:
+                    status_update = {
+                        "type": "visible_people",
+                        "people": visible_people,
+                        "timestamp": time.strftime("%Y-%m-%dT%H:%M:%S", time.localtime(current_time)),
+                    }
+                    await broadcast(status_update)
+                    
+        except asyncio.CancelledError:
+            break
+        except Exception as e:
+            logger.error(f"[AUTO-FACE] Background task error: {e}")
+            await asyncio.sleep(5)
+    
+    logger.info("[AUTO-FACE] Background task stopped")
+
+
+#------This Function starts the auto face recognition background task----------
+async def _start_auto_face_recognition_task():
+    global _auto_face_recognition_task
+    
+    if _auto_face_recognition_task is not None and not _auto_face_recognition_task.done():
+        return
+    
+    _auto_face_recognition_task = asyncio.create_task(_run_auto_face_recognition())
+    logger.info("[AUTO-FACE] Background task created")
+
+
+#------This Function stops the auto face recognition background task----------
+async def _stop_auto_face_recognition_task():
+    global _auto_face_recognition_task
+    
+    if _auto_face_recognition_task is not None and not _auto_face_recognition_task.done():
+        _auto_face_recognition_task.cancel()
+        try:
+            await _auto_face_recognition_task
+        except asyncio.CancelledError:
+            pass
+        _auto_face_recognition_task = None
+        logger.info("[AUTO-FACE] Background task cancelled")
 
 
 #------This Function validates WebSocket messages----------
@@ -163,6 +305,12 @@ async def _ws_handler(request):
                         "auth_token": token,
                     }
                     logger.info(f"[WS] Client authenticated: patient_uid={patient[:8]}...")
+                    
+                    if settings.auto_face_recognition_enabled and len(_connected_clients) == 1:
+                        _auto_face_recognition_enabled = True
+                        await _start_auto_face_recognition_task()
+                        logger.info("[AUTO-FACE] Started on first client connection")
+                    
                     await ws.send_json({"type": "connected", "status": "ok"})
 
                 elif cmd == "identify":
@@ -263,6 +411,50 @@ async def _ws_handler(request):
                 elif cmd == "ping":
                     await ws.send_json({"type": "pong"})
 
+                elif cmd == "auto_face_recognition":
+                    action = msg.get("action", "")
+                    
+                    if action == "start":
+                        _auto_face_recognition_enabled = True
+                        await _start_auto_face_recognition_task()
+                        await ws.send_json({
+                            "type": "auto_face_recognition",
+                            "status": "started",
+                            "interval": settings.auto_face_recognition_interval,
+                        })
+                    elif action == "stop":
+                        _auto_face_recognition_enabled = False
+                        await ws.send_json({
+                            "type": "auto_face_recognition",
+                            "status": "stopped",
+                        })
+                    elif action == "status":
+                        await ws.send_json({
+                            "type": "auto_face_recognition",
+                            "enabled": _auto_face_recognition_enabled,
+                            "interval": settings.auto_face_recognition_interval,
+                            "last_detection": _last_detection_time,
+                            "known_people": list(_last_known_people.values()),
+                        })
+                    else:
+                        await ws.send_json({
+                            "type": "error",
+                            "error": "invalid_action",
+                            "message": "action must be 'start', 'stop', or 'status'"
+                        })
+
+                elif cmd == "get_known_people":
+                    current_time = time.time()
+                    recent_people = {
+                        name: data for name, data in _last_known_people.items()
+                        if current_time - data.get("last_seen", 0) < 300
+                    }
+                    await ws.send_json({
+                        "type": "known_people",
+                        "people": list(recent_people.values()),
+                        "count": len(recent_people),
+                    })
+
                 else:
                     logger.warning(f"[WS] Unknown command: {cmd}")
                     await ws.send_json({
@@ -291,6 +483,11 @@ async def _ws_handler(request):
         _connected_clients.discard(ws)
         _client_last_activity.pop(ws, None)
         _session_auth.pop(ws, None)
+        
+        if not _connected_clients and _auto_face_recognition_enabled:
+            await _stop_auto_face_recognition_task()
+            logger.info("[AUTO-FACE] Stopped - no clients remaining")
+        
         logger.info("=" * 60)
         logger.info(f"[WS] CLIENT DISCONNECTED from {client_ip}")
         logger.info(f"[WS] Total connected clients: {len(_connected_clients)}")
@@ -691,7 +888,8 @@ async def shutdown_streams():
 
     logger.info("[AURA] Shutting down video streams...")
     _shutting_down = True
-
+    
+    await _stop_auto_face_recognition_task()
     
     await asyncio.sleep(2)
 

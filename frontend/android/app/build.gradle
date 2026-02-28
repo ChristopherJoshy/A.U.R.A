@@ -99,20 +99,24 @@ android {
     }
     signingConfigs {
         debug {
-            storeFile file('debug.keystore')
-            storePassword 'android'
-            keyAlias 'androiddebugkey'
-            keyPassword 'android'
+            storeFile file('aura-release.keystore')
+            storePassword 'aura2024secure'
+            keyAlias 'aurakey'
+            keyPassword 'aura2024secure'
+        }
+        release {
+            storeFile file('aura-release.keystore')
+            storePassword 'aura2024secure'
+            keyAlias 'aurakey'
+            keyPassword 'aura2024secure'
         }
     }
     buildTypes {
         debug {
-            signingConfig signingConfigs.debug
+            signingConfig signingConfigs.release
         }
         release {
-            // Caution! In production, you need to generate your own keystore file.
-            // see https://reactnative.dev/docs/signed-apk-android.
-            signingConfig signingConfigs.debug
+            signingConfig signingConfigs.release
             def enableShrinkResources = findProperty('android.enableShrinkResourcesInReleaseBuilds') ?: 'false'
             shrinkResources enableShrinkResources.toBoolean()
             minifyEnabled enableMinifyInReleaseBuilds
