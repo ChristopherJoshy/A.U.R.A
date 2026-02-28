@@ -73,6 +73,35 @@ def print_section(title):
     print(f"\n{BLUE}{BOLD}── {title} ──{RESET}\n")
 
 
+#------This Function checks/installs PyAudio----------
+def check_pyaudio():
+    print_section("Audio Dependencies")
+    
+    try:
+        import pyaudio
+        print_status("●", f"PyAudio installed")
+        return True
+    except ImportError:
+        print_status("●", "PyAudio not installed", YELLOW)
+    
+    print(f"  {CYAN}→{RESET} Installing PyAudio...")
+    
+    try:
+        if sys.platform == "darwin":
+            subprocess.run(["brew", "install", "portaudio"], check=True)
+        elif sys.platform == "linux":
+            subprocess.run(["sudo", "apt-get", "install", "-y", "portaudio19-dev"], check=False)
+        
+        subprocess.run([sys.executable, "-m", "pip", "install", "pyaudio"], check=True)
+        print_status("●", "PyAudio installed successfully")
+        return True
+        
+    except Exception as e:
+        print_status("●", f"PyAudio installation failed: {e}", RED)
+        print(f"  {RED}!{RESET} Microphone will run in demo mode")
+        return False
+
+
 #------This Function streams ollama pull with progress----------
 def stream_ollama_pull(model_name: str) -> bool:
     print(f"  {CYAN}→{RESET} Downloading {model_name}...")
@@ -231,7 +260,7 @@ def check_ollama():
         return False
 
 
-#------This Function checks InsightFace model-------
+#------This Function checks InsightFace model----------
 def check_models():
     print_section("ML Models")
     
@@ -247,11 +276,43 @@ def check_models():
         
     except ImportError:
         print_status("●", "InsightFace not installed", YELLOW)
-        print(f"  {YELLOW}!{RESET} Will be downloaded on first use (face recognition)")
+        print(f"  {CYAN}→{RESET} Installing InsightFace...")
+        
+        try:
+            subprocess.run(
+                [sys.executable, "-m", "pip", "install", "insightface", "onnxruntime"],
+                check=True,
+                timeout=120,
+            )
+            print_status("●", "InsightFace installed successfully")
+            
+            from insightface.app import FaceAnalysis
+            app = FaceAnalysis(name="buffalo_l", providers=["CPUExecutionProvider"])
+            app.prepare(ctx_id=0, det_size=(640, 640))
+            print_status("●", "buffalo_l face recognition model ready")
+            
+        except Exception as e:
+            print_status("●", f"InsightFace installation failed: {e}", RED)
+            print(f"  {RED}!{RESET} Face recognition will be disabled")
+            return
         
     except Exception as e:
         print_status("●", f"Model not ready: {e}", YELLOW)
-        print(f"  {YELLOW}!{RESET} Will be downloaded on first use")
+        print(f"  {CYAN}→{RESET} Attempting to install and setup...")
+        
+        try:
+            subprocess.run(
+                [sys.executable, "-m", "pip", "install", "insightface", "onnxruntime"],
+                check=True,
+                timeout=180,
+            )
+            from insightface.app import FaceAnalysis
+            app = FaceAnalysis(name="buffalo_l", providers=["CPUExecutionProvider"])
+            app.prepare(ctx_id=0, det_size=(640, 640))
+            print_status("●", "buffalo_l face recognition model ready")
+        except Exception as e2:
+            print_status("●", f"Setup failed: {e2}", RED)
+            print(f"  {RED}!{RESET} Face recognition will be disabled")
 
 
 #------This Function checks git for updates-------
@@ -333,6 +394,7 @@ async def main():
     
     print(f"{CYAN}Initializing system checks...{RESET}\n")
     
+    check_pyaudio()
     ollama_ok = check_ollama()
     check_models()
     
