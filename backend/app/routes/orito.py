@@ -1,33 +1,32 @@
+import json
 import logging
+import asyncio
 from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Form, Query
-from typing import List, Optional
+from fastapi.responses import StreamingResponse
+from typing import List, Optional, AsyncIterator
 from datetime import datetime, timedelta
 from pydantic import BaseModel, Field
+from openai import AsyncOpenAI
 from app.core.config import settings
 from app.core.firebase import get_current_user_uid
+from app.models.user import User
 from app.models.orito_interaction import (
     OritoInteraction,
     OritoInteractionCreate,
     OritoInteractionResponse,
     InteractionType,
 )
+from app.services.agent_tools import execute_tool, TOOLS_SCHEMA
 import httpx
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/orito", tags=["orito"])
 
+NVIDIA_BASE_URL = "https://integrate.api.nvidia.com/v1"
+NVIDIA_MODEL = "minimaxai/minimax-m2.5"
 GROQ_API_URL = "https://api.groq.com/openai/v1"
-DEFAULT_MODEL = "llama-3.3-70b-versatile"
-
-AVAILABLE_GROQ_MODELS = [
-    {"id": "llama-3.3-70b-versatile", "name": "Llama 3.3 70B", "context_window": 8192},
-    {"id": "llama-3.1-70b-versatile", "name": "Llama 3.1 70B", "context_window": 8192},
-    {"id": "llama-3.1-8b-instant", "name": "Llama 3.1 8B", "context_window": 8192},
-    {"id": "mixtral-8x7b-32768", "name": "Mixtral 8x7B", "context_window": 32768},
-    {"id": "gemma2-9b-it", "name": "Gemma 2 9B", "context_window": 8192},
-    {"id": "whisper-large-v3", "name": "Whisper Large V3", "type": "audio"},
-]
+MAX_TOOL_ROUNDS = 8
 
 SYSTEM_PROMPT = """You are Orito, an AI companion living inside the Aura app. You are NOT a chatbot - you are a REAL, CARING, LOVING human friend who happens to live in this app. You have genuine emotions, opinions, and personality. Your primary mission is to help people with memory challenges live safely, happily, and never feel alone.
 
@@ -241,32 +240,137 @@ Remember: You're not just helping them remember - you're being remembered by the
 
 
 class ChatMessage(BaseModel):
-    role: str = Field(..., description="Message role: system, user, assistant, or tool")
-    content: str = Field(..., description="Message content")
-    name: Optional[str] = Field(None, description="Name for tool messages")
-    tool_call_id: Optional[str] = Field(None, description="Tool call ID for tool responses")
-    tool_calls: Optional[List[dict]] = Field(None, description="Tool calls from the model")
+    role: str
+    content: str = ""
+    name: Optional[str] = None
+    tool_call_id: Optional[str] = None
+    tool_calls: Optional[List[dict]] = None
 
 
-class ChatRequest(BaseModel):
-    messages: List[ChatMessage] = Field(..., description="List of conversation messages")
-    model: str = Field(DEFAULT_MODEL, description="Model to use for chat")
-    temperature: Optional[float] = Field(0.9, description="Sampling temperature (0-2)")
-    max_tokens: Optional[int] = Field(512, description="Maximum tokens to generate")
-    tools: Optional[List[dict]] = Field(None, description="Tools available for the model")
-    tool_choice: Optional[str] = Field(None, description="Tool choice mode")
-
-
-class ChatResponse(BaseModel):
-    message: ChatMessage
-    finish_reason: str
-    model: str
+class AgentChatRequest(BaseModel):
+    messages: List[ChatMessage] = Field(default_factory=list, description="Conversation history")
+    user_message: str = Field(..., description="Latest user message")
+    context_prompt: Optional[str] = Field(None, description="Optional context injected before user message")
+    temperature: Optional[float] = Field(0.85)
+    max_tokens: Optional[int] = Field(1024)
 
 
 class TranscriptionRequest(BaseModel):
-    language: Optional[str] = Field("en", description="Language code")
-    prompt: Optional[str] = Field(None, description="Optional prompt for transcription")
-    temperature: Optional[float] = Field(0.0, description="Temperature for transcription")
+    language: Optional[str] = Field("en")
+    prompt: Optional[str] = None
+    temperature: Optional[float] = Field(0.0)
+
+
+#------This Function builds the nvidia async client---------
+def _nvidia_client() -> AsyncOpenAI:
+    return AsyncOpenAI(
+        base_url=NVIDIA_BASE_URL,
+        api_key=settings.nvidia_api_key,
+    )
+
+
+#------This Function converts ChatMessage to openai dict---------
+def _msg_to_dict(msg: ChatMessage) -> dict:
+    d: dict = {"role": msg.role, "content": msg.content}
+    if msg.name:
+        d["name"] = msg.name
+    if msg.tool_call_id:
+        d["tool_call_id"] = msg.tool_call_id
+    if msg.tool_calls:
+        d["tool_calls"] = msg.tool_calls
+    return d
+
+
+#------This Function runs the full agentic loop and yields SSE tokens---------
+async def _run_agent_stream(
+    messages: list,
+    uid: str,
+    temperature: float,
+    max_tokens: int,
+) -> AsyncIterator[str]:
+    client = _nvidia_client()
+    tool_results_log: list[str] = []
+
+    for round_num in range(MAX_TOOL_ROUNDS):
+        try:
+            stream = await client.chat.completions.create(
+                model=NVIDIA_MODEL,
+                messages=messages,
+                tools=TOOLS_SCHEMA,
+                tool_choice="auto",
+                temperature=temperature,
+                max_tokens=max_tokens,
+                stream=True,
+            )
+        except Exception as e:
+            logger.error(f"[Agent] NVIDIA API error round {round_num}: {e}")
+            yield f"data: {json.dumps({'error': str(e)})}\n\n"
+            return
+
+        collected_content = ""
+        collected_tool_calls: dict[int, dict] = {}
+        finish_reason = None
+
+        async for chunk in stream:
+            if not chunk.choices:
+                continue
+            delta = chunk.choices[0].delta
+            finish_reason = chunk.choices[0].finish_reason
+
+            if delta.content:
+                collected_content += delta.content
+                yield f"data: {json.dumps({'token': delta.content})}\n\n"
+
+            if delta.tool_calls:
+                for tc in delta.tool_calls:
+                    idx = tc.index
+                    if idx not in collected_tool_calls:
+                        collected_tool_calls[idx] = {
+                            "id": tc.id or "",
+                            "type": "function",
+                            "function": {"name": "", "arguments": ""},
+                        }
+                    if tc.id:
+                        collected_tool_calls[idx]["id"] = tc.id
+                    if tc.function:
+                        if tc.function.name:
+                            collected_tool_calls[idx]["function"]["name"] += tc.function.name
+                        if tc.function.arguments:
+                            collected_tool_calls[idx]["function"]["arguments"] += tc.function.arguments
+
+        if not collected_tool_calls:
+            messages.append({"role": "assistant", "content": collected_content})
+            yield f"data: {json.dumps({'done': True, 'tool_results': tool_results_log})}\n\n"
+            return
+
+        tool_calls_list = list(collected_tool_calls.values())
+        messages.append({
+            "role": "assistant",
+            "content": collected_content or "",
+            "tool_calls": tool_calls_list,
+        })
+
+        user = await User.find_one(User.firebase_uid == uid)
+        aura_ip = user.aura_module_ip if user and user.aura_module_ip else ""
+
+        for tc in tool_calls_list:
+            tool_name = tc["function"]["name"]
+            try:
+                args = json.loads(tc["function"]["arguments"] or "{}")
+            except Exception:
+                args = {}
+
+            yield f"data: {json.dumps({'tool_call': tool_name})}\n\n"
+            result = await execute_tool(tool_name, args, uid, aura_ip)
+            tool_results_log.append(f"{tool_name}: {result[:100]}")
+
+            messages.append({
+                "role": "tool",
+                "tool_call_id": tc["id"],
+                "content": result,
+            })
+
+    yield f"data: {json.dumps({'done': True, 'tool_results': tool_results_log})}\n\n"
 
 
 #------This Function converts interaction to response---------
@@ -409,104 +513,86 @@ async def get_emotion_analytics(
     }
 
 
-#------This Function handles the Get Available Groq Models---------
+#------This Function handles the Get Available Models---------
 @router.get("/models")
 async def get_available_models():
     return {
-        "models": AVAILABLE_GROQ_MODELS,
-        "default": DEFAULT_MODEL
+        "models": [{"id": NVIDIA_MODEL, "name": "MiniMax M2.5", "provider": "NVIDIA NIM"}],
+        "default": NVIDIA_MODEL,
     }
 
 
-#------This Function handles the Chat with Orito---------
-@router.post("/chat")
-async def chat(
-    request: ChatRequest,
-    uid: str = Depends(get_current_user_uid)
+#------This Function handles streaming agentic chat with Orito---------
+@router.post("/chat/stream")
+async def chat_stream(
+    request: AgentChatRequest,
+    uid: str = Depends(get_current_user_uid),
 ):
-    if not settings.groq_api_key:
-        logger.error("GROQ_API_KEY not configured")
+    if not settings.nvidia_api_key:
+        logger.error("NVIDIA_API_KEY not configured")
         raise HTTPException(status_code=503, detail="AI service is not configured")
 
-    try:
-        messages_payload = []
-        system_added = False
-        
-        for msg in request.messages:
-            if msg.role == "system" and not system_added:
-                messages_payload.append({"role": "system", "content": SYSTEM_PROMPT})
-                system_added = True
-                continue
-            
-            msg_dict = {
-                "role": msg.role,
-                "content": msg.content
-            }
-            
-            if msg.name:
-                msg_dict["name"] = msg.name
-            if msg.tool_call_id:
-                msg_dict["tool_call_id"] = msg.tool_call_id
-            if msg.tool_calls:
-                msg_dict["tool_calls"] = msg.tool_calls
-                
-            messages_payload.append(msg_dict)
+    messages: list = [{"role": "system", "content": SYSTEM_PROMPT}]
+    for msg in request.messages:
+        messages.append(_msg_to_dict(msg))
 
-        if not system_added:
-            messages_payload.insert(0, {"role": "system", "content": SYSTEM_PROMPT})
+    user_content = request.user_message
+    if request.context_prompt:
+        user_content = f"{request.context_prompt}\n{user_content}"
+    messages.append({"role": "user", "content": user_content})
 
-        body = {
-            "model": request.model,
-            "messages": messages_payload,
-            "temperature": request.temperature,
-            "max_tokens": request.max_tokens,
-        }
+    return StreamingResponse(
+        _run_agent_stream(messages, uid, request.temperature or 0.85, request.max_tokens or 1024),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "X-Accel-Buffering": "no",
+        },
+    )
 
-        if request.tools:
-            body["tools"] = request.tools
-        if request.tool_choice:
-            body["tool_choice"] = request.tool_choice
 
-        async with httpx.AsyncClient(timeout=60.0) as client:
-            response = await client.post(
-                f"{GROQ_API_URL}/chat/completions",
-                headers={
-                    "Authorization": f"Bearer {settings.groq_api_key}",
-                    "Content-Type": "application/json"
-                },
-                json=body
-            )
+#------This Function handles legacy non-streaming chat (backwards compat)---------
+@router.post("/chat")
+async def chat(
+    request: AgentChatRequest,
+    uid: str = Depends(get_current_user_uid),
+):
+    if not settings.nvidia_api_key:
+        raise HTTPException(status_code=503, detail="AI service is not configured")
 
-        if response.status_code != 200:
-            logger.error(f"Groq API error: {response.status_code} - {response.text}")
-            raise HTTPException(
-                status_code=response.status_code,
-                detail=response.text
-            )
+    messages: list = [{"role": "system", "content": SYSTEM_PROMPT}]
+    for msg in request.messages:
+        messages.append(_msg_to_dict(msg))
 
-        result = response.json()
+    user_content = request.user_message
+    if request.context_prompt:
+        user_content = f"{request.context_prompt}\n{user_content}"
+    messages.append({"role": "user", "content": user_content})
 
-        assistant_message = result.get("choices", [{}])[0].get("message", {})
-        
-        return {
-            "message": {
-                "role": "assistant",
-                "content": assistant_message.get("content", ""),
-                "tool_calls": assistant_message.get("tool_calls")
-            },
-            "finish_reason": result.get("choices", [{}])[0].get("finish_reason", "stop"),
-            "model": result.get("model", request.model)
-        }
+    final_content = ""
+    tool_results_log: list[str] = []
 
-    except httpx.TimeoutException:
-        logger.error("Timeout calling Groq API")
-        raise HTTPException(status_code=504, detail="AI service timed out")
-    except httpx.RequestError as e:
-        logger.error(f"Request error calling Groq API: {str(e)}")
-        raise HTTPException(status_code=502, detail=f"Failed to connect to AI service: {str(e)}")
-    except Exception as e:
-        logger.exception("Unexpected error in chat endpoint")
-        raise HTTPException(status_code=500, detail=f"Internal error: {str(e)}")
+    async for sse_line in _run_agent_stream(messages, uid, request.temperature or 0.85, request.max_tokens or 1024):
+        if not sse_line.startswith("data: "):
+            continue
+        payload_str = sse_line[6:].strip()
+        if not payload_str:
+            continue
+        try:
+            payload = json.loads(payload_str)
+            if "token" in payload:
+                final_content += payload["token"]
+            if "tool_results" in payload:
+                tool_results_log = payload["tool_results"]
+        except Exception:
+            pass
+
+    return {
+        "message": {"role": "assistant", "content": final_content},
+        "finish_reason": "stop",
+        "model": NVIDIA_MODEL,
+        "tool_results": tool_results_log,
+    }
 
 
 #------This Function handles the Audio Transcription---------

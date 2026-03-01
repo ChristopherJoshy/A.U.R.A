@@ -1,7 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { View, Text, TouchableOpacity, StyleSheet, ActivityIndicator, Alert, ScrollView } from 'react-native';
 import { useRouter } from 'expo-router';
-import Constants from 'expo-constants';
 
 let GoogleSignin: any = null;
 let firebaseAuth: any = null;
@@ -25,47 +24,28 @@ import AuraLogo from '../../src/components/AuraLogo';
 import { colors, fonts, spacing, radius } from '../../src/theme';
 import { Ionicons } from '@expo/vector-icons';
 
-const GOOGLE_CLIENT_ID_SUFFIX = '.apps.googleusercontent.com';
 
-//------This Function handles the Is Google Oauth Client Id---------
-function isGoogleOauthClientId(value: string): boolean {
-    return value.trim().endsWith(GOOGLE_CLIENT_ID_SUFFIX);
-}
-
-//------This Function handles the Resolve Google Web Client Id---------
-function resolveGoogleWebClientId(): string {
-    const configuredId = String(
-        Constants.expoConfig?.extra?.expoPublicGoogleClientId ||
-        Constants.expoConfig?.extra?.firebaseWebClientId ||
-        ''
-    ).trim();
-
-    if (configuredId && isGoogleOauthClientId(configuredId)) {
-        return configuredId;
-    }
-
+let _googleWebClientId: string | null = null;
+//------This Function resolves the Google Web Client ID from google-services.json---------
+function getGoogleWebClientId(): string {
+    if (_googleWebClientId !== null) return _googleWebClientId;
     try {
         const googleServices = require('../google-services.json');
         const client = googleServices?.client?.[0];
-        const oauthClients = Array.isArray(client?.oauth_client) ? client.oauth_client : [];
-        const appInviteClients = Array.isArray(client?.services?.appinvite_service?.other_platform_oauth_client)
-            ? client.services.appinvite_service.other_platform_oauth_client
-            : [];
-
-        const allCandidates = [...oauthClients, ...appInviteClients];
-        const webClient = allCandidates.find((entry: any) =>
-            entry?.client_type === 3 &&
-            typeof entry?.client_id === 'string' &&
-            isGoogleOauthClientId(entry.client_id)
+        const oauthClients: any[] = Array.isArray(client?.oauth_client) ? client.oauth_client : [];
+        const appInviteClients: any[] = Array.isArray(
+            client?.services?.appinvite_service?.other_platform_oauth_client
+        ) ? client.services.appinvite_service.other_platform_oauth_client : [];
+        const webClient = [...oauthClients, ...appInviteClients].find(
+            (e: any) => e?.client_type === 3 && typeof e?.client_id === 'string'
         );
-
-        return typeof webClient?.client_id === 'string' ? webClient.client_id : '';
+        _googleWebClientId = typeof webClient?.client_id === 'string' ? webClient.client_id : '';
     } catch {
-        return '';
+        _googleWebClientId = '';
     }
+    return _googleWebClientId;
 }
 
-const GOOGLE_WEB_CLIENT_ID = resolveGoogleWebClientId();
 
 const DEV_ROLES = [
     { role: 'patient' as const, label: 'Patient', icon: 'person-outline' as const, name: 'Alex Rivera' },
@@ -87,10 +67,10 @@ export default function LoginScreen() {
             console.log('Google Sign-In native module not available');
         } else if (!googleSigninConfigured) {
             try {
-                if (!GOOGLE_WEB_CLIENT_ID) {
-                    console.warn('No valid Google Web Client ID found. Check FIREBASE_WEB_CLIENT_ID or google-services.json.');
+                if (!getGoogleWebClientId()) {
+                    console.warn('No valid Google Web Client ID found in google-services.json.');
                 }
-                GoogleSignin.configure({ webClientId: GOOGLE_WEB_CLIENT_ID });
+                GoogleSignin.configure({ webClientId: getGoogleWebClientId() });
                 googleSigninConfigured = true;
             } catch (e) {
                 console.error('Google Signin config error', e);
@@ -115,8 +95,8 @@ export default function LoginScreen() {
             Alert.alert('Development Mode', 'Google Sign-In requires a development build.');
             return;
         }
-        if (!GOOGLE_WEB_CLIENT_ID) {
-            Alert.alert('Configuration Error', 'Google OAuth web client ID is missing or invalid.');
+        if (!getGoogleWebClientId()) {
+            Alert.alert('Configuration Error', 'Google OAuth web client ID is missing from google-services.json.');
             return;
         }
         try {

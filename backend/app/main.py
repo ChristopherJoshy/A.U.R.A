@@ -12,6 +12,7 @@ from fastapi.responses import JSONResponse
 from fastapi.exceptions import RequestValidationError
 import asyncio
 from typing import Optional
+from app.core.logging_config import setup_logging
 from app.core.config import settings
 from app.core.firebase import init_firebase, _app as firebase_app
 from app.core.database import connect_db, close_db, get_aura_modules_db, check_db_health
@@ -49,11 +50,7 @@ BOLD = "\033[1m"
 
 UPDATE_CHECK_INTERVAL = 300
 
-
-logging.basicConfig(
-    level=logging.INFO if settings.environment == "production" else logging.DEBUG,
-    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
-)
+setup_logging(debug=(settings.environment != "production"))
 logger = logging.getLogger(__name__)
 
 
@@ -267,6 +264,39 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+_http_logger = logging.getLogger("aura.http")
+_METHOD_COLOUR = {
+    "GET":    "\033[38;5;39m",
+    "POST":   "\033[38;5;82m",
+    "PUT":    "\033[38;5;220m",
+    "PATCH":  "\033[38;5;208m",
+    "DELETE": "\033[38;5;196m",
+}
+_STATUS_COLOUR = {
+    2: "\033[38;5;82m",   # 2xx green
+    3: "\033[38;5;51m",   # 3xx cyan
+    4: "\033[38;5;220m",  # 4xx yellow
+    5: "\033[38;5;196m",  # 5xx red
+}
+
+
+#------This middleware logs each HTTP request with colours---------
+@app.middleware("http")
+async def log_requests(request: Request, call_next):
+    start = time.perf_counter()
+    response = await call_next(request)
+    ms = (time.perf_counter() - start) * 1000
+    method = request.method
+    path = request.url.path
+    status = response.status_code
+    mc = _METHOD_COLOUR.get(method, "\033[0m")
+    sc = _STATUS_COLOUR.get(status // 100, "\033[0m")
+    _http_logger.info(
+        f"{mc}{method:<7}\033[0m {path}  {sc}{status}\033[0m  \033[2m{ms:.0f}ms\033[0m"
+    )
+    return response
+
 
 app.include_router(auth.router)
 app.include_router(user.router)

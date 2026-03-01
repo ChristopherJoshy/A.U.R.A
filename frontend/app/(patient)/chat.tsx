@@ -10,6 +10,7 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 import api from '../../src/services/api';
 import {
     sendMessage,
+    sendMessageStream,
     resetConversation,
     transcribeAudio,
     detectEmotionFromText,
@@ -106,6 +107,7 @@ export default function ChatScreen() {
     const [messages, setMessages] = useState<Msg[]>([]);
     const [input, setInput] = useState('');
     const [loading, setLoading] = useState(false);
+    const [streamingText, setStreamingText] = useState('');
     const [isListening, setIsListening] = useState(false);
     const flatRef = useRef<FlatList>(null);
     const fadeAnim = useRef(new Animated.Value(0)).current;
@@ -471,7 +473,13 @@ export default function ChatScreen() {
         incrementConversations().catch(() => { });
 
         try {
-            const reply = await sendMessage(text);
+            let reply = '';
+            setStreamingText('');
+            reply = await sendMessageStream(text, (token) => {
+                setStreamingText((prev) => prev + token);
+                setTimeout(() => flatRef.current?.scrollToEnd(), 50);
+            });
+            setStreamingText('');
             if (!isMountedRef.current) {
                 return;
             }
@@ -660,7 +668,13 @@ export default function ChatScreen() {
                 removeClippedSubviews={true}
             />
 
-            {loading && (
+            {streamingText ? (
+                <View style={[s.msgRow, s.botRow]}>
+                    <View style={[s.bubble, s.botBubble]}>
+                        <Text style={[s.msgText, s.botText]}>{streamingText}</Text>
+                    </View>
+                </View>
+            ) : loading && (
                 <View style={s.typingWrap}>
                     <ActivityIndicator size="small" color="#000000" />
                     <Text style={s.typingText}>Orito is thinking...</Text>
