@@ -22,6 +22,7 @@ LogBox.ignoreLogs([
     'Maximum call stack size exceeded',
     'dnssd-advertise',
     'Request failed with status code 401',
+    "The screen 'index' was removed natively but didn't get removed from JS state",
 ]);
 
 //------This Function handles the Root Layout Content---------
@@ -33,6 +34,9 @@ function RootLayoutContent() {
     useEffect(() => {
         if (loading || !initialLoadDone) return;
         if (connectionError) return;
+
+        // Let index.tsx (splash screen) handle its own routing on first load
+        if ((segments as string[]).length === 0 || segments[0] === undefined) return;
 
         const inAuthGroup = segments[0] === '(auth)';
         const inOnboardingGroup = segments[0] === '(onboarding)';
