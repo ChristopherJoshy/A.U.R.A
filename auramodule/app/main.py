@@ -4,6 +4,7 @@ import logging
 import os
 import platform
 import re
+import select
 import signal
 import subprocess
 import sys
@@ -231,33 +232,39 @@ def print_section(title):
 #------This Function checks/installs PyAudio----------
 def check_pyaudio():
     print_section("Audio Dependencies")
+    auto_install = os.environ.get("AUTO_INSTALL_DEPS", "false").lower() == "true"
+    
+    if not auto_install:
+        print_status("●", "PyAudio not found - auto-install disabled", YELLOW)
+        print(f"  {CYAN}→{RESET} To enable, run with: AUTO_INSTALL_DEPS=true python -m app.main")
+        return False
     
     try:
         import pyaudio
         print_status("●", f"PyAudio installed")
         return True
     except ImportError:
-        print_status("●", "PyAudio not installed", YELLOW)
+        pass
     
     print(f"  {CYAN}→{RESET} Installing PyAudio...")
     
     try:
         if sys.platform == "darwin":
-            subprocess.run(["brew", "install", "portaudio"], check=True)
+            subprocess.run(["brew", "install", "portaudio"], check=True, timeout=300)
         elif sys.platform == "linux":
             if Path("/etc/arch-release").exists():
-                print("  {BLUE}›{RESET} Detected Arch Linux")
-                subprocess.run(["sudo", "pacman", "-S", "--noconfirm", "portaudio"], check=False)
+                print(f"  {BLUE}›{RESET} Detected Arch Linux")
+                subprocess.run(["sudo", "pacman", "-S", "--noconfirm", "portaudio"], check=False, timeout=300)
             elif Path("/etc/fedora-release").exists():
-                print("  {BLUE}›{RESET} Detected Fedora")
-                subprocess.run(["sudo", "dnf", "install", "-y", "portaudio-devel"], check=False)
+                print(f"  {BLUE}›{RESET} Detected Fedora")
+                subprocess.run(["sudo", "dnf", "install", "-y", "portaudio-devel"], check=False, timeout=300)
             elif Path("/etc/debian_version").exists() or Path("/etc/ubuntu_version").exists():
-                print("  {BLUE}›{RESET} Detected Debian/Ubuntu")
-                subprocess.run(["sudo", "apt-get", "install", "-y", "portaudio19-dev"], check=False)
+                print(f"  {BLUE}›{RESET} Detected Debian/Ubuntu")
+                subprocess.run(["sudo", "apt-get", "install", "-y", "portaudio19-dev"], check=False, timeout=300)
             else:
-                print("  {BLUE}›{RESET} Unknown distro, trying pip...")
+                print(f"  {BLUE}›{RESET} Unknown distro, trying pip...")
         
-        subprocess.run([sys.executable, "-m", "pip", "install", "pyaudio"], check=True)
+        subprocess.run([sys.executable, "-m", "pip", "install", "pyaudio"], check=True, timeout=300)
         print_status("●", "PyAudio installed successfully")
         return True
         
@@ -268,7 +275,7 @@ def check_pyaudio():
 
 
 #------This Function streams ollama pull with progress----------
-def stream_ollama_pull(model_name: str) -> bool:
+def stream_ollama_pull(model_name: str, timeout: int = 600) -> bool:
     print(f"  {CYAN}→{RESET} Downloading {model_name}...")
     
     try:
@@ -292,8 +299,20 @@ def stream_ollama_pull(model_name: str) -> bool:
         last_message = None
         last_count = 0
         
-        for line in process.stdout:
-            line = line.strip()
+        while True:
+            if time.time() - start_time > timeout:
+                print(f"\n  {RED}!{RESET} Download timed out after {timeout}s")
+                process.terminate()
+                return False
+            
+            ready = select.select([process.stdout], [], [], 1.0)
+            if ready[0]:
+                line = process.stdout.readline()
+                if not line:
+                    break
+                line = line.strip()
+            else:
+                continue
             
             if "pulling manifest" in line.lower():
                 msg = "Pulling manifest..."
@@ -316,10 +335,10 @@ def stream_ollama_pull(model_name: str) -> bool:
                                     if len(nums) == 2:
                                         total_layers = max(total_layers, int(nums[1]))
                                         downloaded_layers = int(nums[0])
-                        except:
+                        except Exception:
                             pass
                     
-                    downloaded_layers += 1
+                    # downloaded_layers += 1
                     
                     elapsed = time.time() - start_time
                     speed = downloaded_layers / elapsed if elapsed > 0 else 0
@@ -358,10 +377,10 @@ def stream_ollama_pull(model_name: str) -> bool:
         if last_message and last_count > 1:
             print(f"  {BLUE}›{RESET} {last_message}(x{last_count})")
             
-        process.wait()
+        retcode = process.wait(timeout=timeout)
         print()  
         
-        if process.returncode == 0:
+        if retcode == 0:
             print_status("●", f"{model_name} downloaded successfully")
             return True
         return False
@@ -527,6 +546,12 @@ def check_ollama():
 #------This Function checks InsightFace model----------
 def check_models() -> bool:
     print_section("ML Models")
+    auto_install = os.environ.get("AUTO_INSTALL_DEPS", "false").lower() == "true"
+    
+    if not auto_install:
+        print_status("●", "InsightFace not found - auto-install disabled", YELLOW)
+        print(f"  {CYAN}→{RESET} To enable, run with: AUTO_INSTALL_DEPS=true python -m app.main")
+        return False
     
     print(f"  {BLUE}›{RESET} Checking InsightFace/buffalo_l...")
     
@@ -542,13 +567,14 @@ def check_models() -> bool:
         
     except ImportError:
         print_status("●", "InsightFace not installed", YELLOW)
+        
         print(f"  {CYAN}→{RESET} Installing InsightFace and dependencies...")
         
         try:
             subprocess.run(
                 [sys.executable, "-m", "pip", "install", "insightface", "onnxruntime"],
                 check=True,
-                timeout=120,
+                timeout=300,
             )
             print_status("●", "InsightFace installed successfully")
             
@@ -566,13 +592,14 @@ def check_models() -> bool:
         
     except Exception as e:
         print_status("●", f"Model not ready: {e}", YELLOW)
+        
         print(f"  {CYAN}→{RESET} Attempting to reinstall and setup...")
         
         try:
             subprocess.run(
                 [sys.executable, "-m", "pip", "install", "insightface", "onnxruntime"],
                 check=True,
-                timeout=180,
+                timeout=300,
             )
             print(f"  {CYAN}→{RESET} Reinitializing buffalo_l model...")
             from insightface.app import FaceAnalysis

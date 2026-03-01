@@ -488,9 +488,7 @@ async def _ws_handler(request):
                     if settings.ollama_streaming:
                         full_response = ""
                         
-                        async def on_token(token: str):
-                            nonlocal full_response
-                            full_response += token
+                        async def _send_token(token: str):
                             try:
                                 await ws.send_json({
                                     "type": "streaming_token",
@@ -498,6 +496,11 @@ async def _ws_handler(request):
                                 })
                             except Exception:
                                 pass
+                        
+                        def on_token(token: str):
+                            nonlocal full_response
+                            full_response += token
+                            asyncio.create_task(_send_token(token))
                         
                         result = await streaming_chat(
                             user_message=message,

@@ -3,6 +3,7 @@ import asyncio
 import json
 import logging
 import time
+import numpy as np
 from typing import Optional, List, Dict, Any, Callable, AsyncGenerator
 from collections import deque
 from app.core.config import settings
@@ -12,18 +13,17 @@ logger = logging.getLogger(__name__)
 
 #------This Class handles Voice Activity Detection---------
 class VoiceActivityDetector:
-    def __init__(self, energy_threshold: float = 0.02, min_speech_duration: float = 0.3):
+    def __init__(self, energy_threshold: float = 0.02, min_speech_duration: float = 0.3, sample_rate: int = 16000):
         self.energy_threshold = energy_threshold
         self.min_speech_duration = min_speech_duration
+        self.sample_rate = sample_rate
         self.is_speaking = False
         self.speech_start_time: Optional[float] = None
         self.silence_duration = 0.0
         self.speech_buffer: List[float] = []
     
     #------This Function checks if audio chunk contains speech---------
-    def detect_speech(self, audio_chunk: bytes) -> bool:
-        import numpy as np
-        
+    def detect_speech(self, audio_chunk: bytes, sample_rate: int = 16000, bytes_per_sample: int = 2) -> bool:
         try:
             audio_data = np.frombuffer(audio_chunk, dtype=np.int16)
             audio_float = audio_data.astype(np.float32) / 32768.0
@@ -39,7 +39,7 @@ class VoiceActivityDetector:
                 return True
             else:
                 if self.is_speaking:
-                    self.silence_duration += len(audio_chunk) / 16000.0
+                    self.silence_duration += len(audio_chunk) / (self.sample_rate * 2)
                     
                     if self.silence_duration > 0.5:
                         speech_duration = time.time() - self.speech_start_time if self.speech_start_time else 0
@@ -62,42 +62,65 @@ class VoiceActivityDetector:
 
 #------This Class handles the Audio Buffer for Streaming---------
 class AudioBuffer:
-    def __init__(self, max_seconds: int = 30):
+    def __init__(self, max_seconds: int = 30, sample_rate: int = 16000):
         self.max_seconds = max_seconds
-        self.max_samples = max_seconds * 16000
-        self.buffer: deque = deque(maxlen=self.max_samples)
+        self.sample_rate = sample_rate
+        self.max_samples = max_seconds * sample_rate
+        self.chunks: list = []
+        self.total_samples: int = 0
         self.timestamps: deque = deque(maxlen=100)
     
     #------This Function adds audio data to buffer---------
     def append(self, audio_data: bytes, timestamp: Optional[float] = None):
-        self.buffer.extend(audio_data)
+        chunk_samples = len(audio_data) // 2
+        self.chunks.append(audio_data)
+        self.total_samples += chunk_samples
+        
+        while self.total_samples > self.max_samples:
+            if self.chunks:
+                removed = self.chunks.pop(0)
+                self.total_samples -= len(removed) // 2
         
         if timestamp:
             self.timestamps.append({
                 "timestamp": timestamp,
-                "position": len(self.buffer)
+                "position": self.total_samples
             })
     
     #------This Function gets audio data from buffer---------
     def get_audio(self, start_seconds: float = 0) -> Optional[bytes]:
-        if not self.buffer:
+        if not self.chunks:
             return None
         
-        start_sample = int(start_seconds * 16000)
-        if start_sample >= len(self.buffer):
+        start_sample = int(start_seconds * self.sample_rate)
+        if start_sample >= self.total_samples:
             return None
         
-        audio_slice = list(self.buffer)[start_sample:]
-        return bytes(audio_slice)
+        needed_sample = start_sample
+        result_parts = []
+        samples_collected = 0
+        
+        for chunk in self.chunks:
+            chunk_samples = len(chunk) // 2
+            if samples_collected + chunk_samples <= needed_sample:
+                samples_collected += chunk_samples
+                continue
+            
+            offset_bytes = (needed_sample - samples_collected) * 2
+            result_parts.append(chunk[offset_bytes:])
+            samples_collected += chunk_samples
+        
+        return b"".join(result_parts) if result_parts else None
     
     #------This Function clears the buffer---------
     def clear(self):
-        self.buffer.clear()
+        self.chunks.clear()
+        self.total_samples = 0
         self.timestamps.clear()
     
     #------This Function gets buffer duration in seconds---------
     def duration(self) -> float:
-        return len(self.buffer) / 16000.0
+        return self.total_samples / self.sample_rate
 
 
 #------This Class handles the Streaming Service---------
@@ -225,6 +248,7 @@ class StreamingService:
                 audio_data = self.audio_buffer.get_audio()
                 if audio_data:
                     await self._send_audio_stream(audio_data)
+                    self.audio_buffer.clear()
             
             await asyncio.sleep(0.1)
         

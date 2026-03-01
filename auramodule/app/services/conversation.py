@@ -161,8 +161,8 @@ async def stream_ollama_response(
     ]
     
     if context and context.get("conversation_history"):
-        for msg in context["conversation_history"][-10:]:
-            messages.insert(1, msg)
+        history_slice = context["conversation_history"][-10:]
+        messages = messages[:1] + history_slice + messages[1:]
     
     tools = None
     if context and context.get("enable_tools"):
