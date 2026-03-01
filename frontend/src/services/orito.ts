@@ -2295,217 +2295,129 @@ async function triggerAutomaticSosIfNeeded(message: string): Promise<string | nu
 }
 
 //------This Function handles the Send Message---------
-export async function sendMessage(userMessage: string): Promise<string> {
+// ─── Backend streaming helpers ───────────────────────────────────────────────
 
+//------This Function resolves the backend base URL---------
+function getBackendBaseUrl(): string {
+    const manifestExtra =
+        (Constants as any)?.manifest2?.extra?.expoClient?.extra ||
+        (Constants as any)?.manifest?.extra ||
+        Constants.expoConfig?.extra;
+    return (
+        process.env.EXPO_PUBLIC_BACKEND_URL ||
+        manifestExtra?.backendUrl ||
+        'http://10.0.2.2:8001'
+    ).replace(/\/+$/, '');
+}
+
+//------This Function sends a message and streams tokens from backend---------
+export async function sendMessageStream(
+    userMessage: string,
+    onToken: (token: string) => void,
+    onToolCall?: (toolName: string) => void,
+): Promise<string> {
     if (!isInitialized) {
         await initializeOrito();
     }
 
+    const emotionResult = detectEmotion(userMessage);
+    if (emotionResult.emotions.length > 0) {
+        userContext.detectedEmotions.push(...emotionResult.emotions);
+        userContext.detectedEmotions = userContext.detectedEmotions.slice(-10);
+    }
+
+    const contextPrompt = buildContextPrompt(emotionResult);
+    userContext.lastInteractionTime = new Date();
+
+    const token = await AsyncStorage.getItem('firebase_token');
+    const baseUrl = getBackendBaseUrl();
+
+    const historyToSend = conversationHistory.slice(-30);
+
+    let fullReply = '';
+    try {
+        const response = await fetch(`${baseUrl}/orito/chat/stream`, {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+                ...(token ? { Authorization: `Bearer ${token}` } : {}),
+            },
+            body: JSON.stringify({
+                messages: historyToSend,
+                user_message: userMessage,
+                context_prompt: contextPrompt || undefined,
+                temperature: 0.85,
+                max_tokens: 1024,
+            }),
+        });
+
+        if (!response.ok) {
+            throw new OritoError(
+                `Backend returned ${response.status}`,
+                ErrorCodes.AI_SERVICE_ERROR,
+                true,
+                { status: response.status },
+            );
+        }
+
+        const reader = response.body?.getReader();
+        if (!reader) throw new OritoError('No response body', ErrorCodes.AI_SERVICE_ERROR, true);
+
+        const decoder = new TextDecoder();
+        let buffer = '';
+
+        while (true) {
+            const { done, value } = await reader.read();
+            if (done) break;
+            buffer += decoder.decode(value, { stream: true });
+            const lines = buffer.split('\n');
+            buffer = lines.pop() ?? '';
+            for (const line of lines) {
+                if (!line.startsWith('data: ')) continue;
+                const payload = line.slice(6).trim();
+                if (!payload) continue;
+                try {
+                    const data = JSON.parse(payload);
+                    if (data.token) {
+                        fullReply += data.token;
+                        onToken(data.token);
+                    }
+                    if (data.tool_call && onToolCall) {
+                        onToolCall(data.tool_call);
+                    }
+                } catch { /* ignore malformed SSE lines */ }
+            }
+        }
+    } catch (err: any) {
+        const { code, recoverable } = classifyError(err);
+        if (recoverable) return getRecoveryResponse(code);
+        return "I'm having some trouble right now. Let's try again in a moment.";
+    }
+
+    const reply = fullReply || getRecoveryResponse(ErrorCodes.AI_SERVICE_ERROR);
+    conversationHistory.push({ role: 'user', content: contextPrompt ? `${contextPrompt}\n${userMessage}` : userMessage });
+    conversationHistory.push({ role: 'assistant', content: reply });
+    await saveConversationHistory();
+    await saveUserContext();
+    logInteractionToBackend('text', userMessage, reply, []).catch(() => { });
+    return reply;
+}
+
+//------This Function sends a message and returns the full reply---------
+export async function sendMessage(userMessage: string): Promise<string> {
+    if (!isInitialized) {
+        await initializeOrito();
+    }
 
     const emotionResult = detectEmotion(userMessage);
     if (emotionResult.emotions.length > 0) {
         userContext.detectedEmotions.push(...emotionResult.emotions);
-
         userContext.detectedEmotions = userContext.detectedEmotions.slice(-10);
     }
 
-
-    const contextPrompt = buildContextPrompt(emotionResult);
-
-
-    const enhancedMessage = contextPrompt ? `${contextPrompt}\n${userMessage}` : userMessage;
-
-    conversationHistory.push({ role: 'user', content: enhancedMessage });
     userContext.lastInteractionTime = new Date();
-    const autoSosStatus = await triggerAutomaticSosIfNeeded(userMessage);
-    if (autoSosStatus) {
-        conversationHistory.push({
-            role: 'system',
-            content: `[Safety Action] ${autoSosStatus}`,
-        });
-    }
 
-    const toolsUsed: string[] = [];
-    await maybeInjectAuraGroundTruthForTurn(userMessage, toolsUsed);
-    const forceTools = shouldForceToolUsage(userMessage);
-
-    const body: Record<string, any> = {
-        model: 'llama-3.3-70b-versatile',
-        messages: conversationHistory,
-        temperature: 0.85,
-        max_tokens: 1024,
-    };
-    if (forceTools) {
-        body.tools = TOOLS;
-        body.tool_choice = 'required';
-    }
-
-
-    //------This Function handles the Complete Tool Round---------
-    const completeToolRound = async (toolMessage: any): Promise<string> => {
-        conversationHistory.push(toolMessage);
-        for (const tc of toolMessage.tool_calls || []) {
-            //------This Function handles the Tool Name---------
-            const toolName = tc?.function?.name;
-            if (!toolName) {
-                continue;
-            }
-
-            //------This Function handles the Args---------
-            const args = parseToolArguments(tc?.function?.arguments);
-            const result = await executeToolCall(toolName, args);
-            toolsUsed.push(toolName);
-
-            conversationHistory.push({
-                role: 'tool',
-                content: result,
-                tool_call_id: tc.id,
-                name: toolName,
-            });
-
-            if (toolName === 'get_aura_status') {
-                addAuraGroundTruthSystemMessage('tool');
-            }
-        }
-
-        //------This Function handles the Follow Up---------
-        const followUp = await withRetry(async () => {
-            const response = await api.post('/orito/chat', {
-                messages: conversationHistory,
-                tools: TOOLS,
-                tool_choice: 'auto',
-                temperature: 0.85,
-                max_tokens: 1024,
-            });
-            if (!response.status || response.status >= 400) {
-                throw new OritoError(
-                    'AI service error on follow-up',
-                    ErrorCodes.AI_SERVICE_ERROR,
-                    true,
-                    { status: response.status }
-                );
-            }
-            return response;
-        }, { maxRetries: 2 });
-
-        const followData = followUp.data;
-        const followChoice = followData.choices?.[0];
-        const reply = followChoice?.message?.content || getRecoveryResponse(ErrorCodes.AI_SERVICE_ERROR);
-        conversationHistory.push({ role: 'assistant', content: reply });
-        await saveConversationHistory();
-        await saveUserContext();
-        logInteractionToBackend('text', userMessage, reply, toolsUsed).catch(() => { });
-        return reply;
-    };
-
-    try {
-
-        //------This Function handles the Res---------
-        const res = await withRetry(async () => {
-            const response = await api.post('/orito/chat', body);
-
-
-            if (!response.status || response.status >= 400) {
-                if (response.status === 503 || response.status === 429) {
-
-                    throw new OritoError(
-                        'AI service temporarily unavailable',
-                        ErrorCodes.AI_SERVICE_ERROR,
-                        true,
-                        { status: response.status }
-                    );
-                }
-
-                //------This Function handles the Error Info---------
-                const errorInfo = response.data || {};
-                throw new OritoError(
-                    errorInfo.error?.message || 'AI service error',
-                    ErrorCodes.AI_SERVICE_ERROR,
-                    false,
-                    { status: response.status, ...errorInfo }
-                );
-            }
-            return response;
-        }, { maxRetries: 2 });
-
-        const data = res.data;
-        const choice = data.choices?.[0];
-        if (!choice) return getRecoveryResponse(ErrorCodes.AI_SERVICE_ERROR);
-
-        const msg = choice.message;
-
-        if (msg.tool_calls && msg.tool_calls.length > 0) {
-            return await completeToolRound(msg);
-        }
-
-        if (forceTools) {
-            //------This Function handles the Forced Tool Res---------
-            const forcedToolRes = await withRetry(async () => {
-                const response = await api.post('/orito/chat', {
-                    messages: [
-                        ...conversationHistory,
-                        {
-                            role: 'system',
-                            content: 'For the latest user request, call at least one relevant tool before responding.',
-                        },
-                    ],
-                    tools: TOOLS,
-                    tool_choice: 'required',
-                    temperature: 0.4,
-                    max_tokens: 512,
-                });
-
-                if (!response.status || response.status >= 400) {
-                    throw new OritoError(
-                        'AI tool enforcement failed',
-                        ErrorCodes.AI_SERVICE_ERROR,
-                        true,
-                        { status: response.status }
-                    );
-                }
-                return response;
-            }, { maxRetries: 1 });
-
-            const forcedData = forcedToolRes.data;
-            const forcedChoice = forcedData.choices?.[0];
-            const forcedMsg = forcedChoice?.message;
-            if (forcedMsg?.tool_calls?.length) {
-                return await completeToolRound(forcedMsg);
-            }
-        }
-
-        const reply = msg.content || getRecoveryResponse(ErrorCodes.AI_SERVICE_ERROR);
-        conversationHistory.push({ role: 'assistant', content: reply });
-
-        await saveConversationHistory();
-        await saveUserContext();
-
-
-        logInteractionToBackend('text', userMessage, reply, toolsUsed).catch(() => { });
-
-        return reply;
-    } catch (err: any) {
-
-        console.log('[ORITO] Send message error:', err);
-
-        const { code, recoverable } = classifyError(err);
-        const errorMessage = String(err?.message || '');
-
-        if (code === ErrorCodes.PERMISSION_DENIED) {
-            return "I'm not fully configured to respond yet. Please check the AI API key and permissions.";
-        }
-
-        if (/production models|deprecat|decommission|model.*not found/i.test(errorMessage)) {
-            return "My AI model setting needs an update. Please switch to a currently supported Groq model.";
-        }
-
-        if (recoverable) {
-            return getRecoveryResponse(code);
-        }
-
-
-        return "I'm having some trouble right now. Let's try again in a moment.";
-    }
+    return sendMessageStream(userMessage, () => { });
 }
 
 //------This Function handles the Transcribe Audio---------
@@ -2549,209 +2461,7 @@ export async function transcribeAudio(uri: string): Promise<string> {
 
 //------This Function handles the Send Voice Message---------
 export async function sendVoiceMessage(userMessage: string): Promise<string> {
-
-    if (!isInitialized) {
-        await initializeOrito();
-    }
-
-
-    const emotionResult = detectEmotion(userMessage);
-    if (emotionResult.emotions.length > 0) {
-        userContext.detectedEmotions.push(...emotionResult.emotions);
-        userContext.detectedEmotions = userContext.detectedEmotions.slice(-10);
-    }
-
-
-    let contextPrompt = buildContextPrompt(emotionResult);
-    contextPrompt += `[This is a voice conversation. Keep responses conversational and natural for speech.]\n`;
-
-    const enhancedMessage = contextPrompt ? `${contextPrompt}\n${userMessage}` : userMessage;
-
-    conversationHistory.push({ role: 'user', content: enhancedMessage });
-    userContext.lastInteractionTime = new Date();
-    const autoSosStatus = await triggerAutomaticSosIfNeeded(userMessage);
-    if (autoSosStatus) {
-        conversationHistory.push({
-            role: 'system',
-            content: `[Safety Action] ${autoSosStatus}`,
-        });
-    }
-
-    const toolsUsed: string[] = [];
-    await maybeInjectAuraGroundTruthForTurn(userMessage, toolsUsed);
-    const forceTools = shouldForceToolUsage(userMessage);
-
-    const body: Record<string, any> = {
-        model: 'llama-3.3-70b-versatile',
-        messages: conversationHistory,
-        temperature: 0.9,
-        max_tokens: 512,
-    };
-    if (forceTools) {
-        body.tools = TOOLS;
-        body.tool_choice = 'required';
-    }
-
-    //------This Function handles the Complete Tool Round---------
-    const completeToolRound = async (toolMessage: any): Promise<string> => {
-        conversationHistory.push(toolMessage);
-        for (const tc of toolMessage.tool_calls || []) {
-            //------This Function handles the Tool Name---------
-            const toolName = tc?.function?.name;
-            if (!toolName) {
-                continue;
-            }
-            //------This Function handles the Args---------
-            const args = parseToolArguments(tc?.function?.arguments);
-            const result = await executeToolCall(toolName, args);
-            toolsUsed.push(toolName);
-
-            conversationHistory.push({
-                role: 'tool',
-                content: result,
-                tool_call_id: tc.id,
-                name: toolName,
-            });
-
-            if (toolName === 'get_aura_status') {
-                addAuraGroundTruthSystemMessage('tool');
-            }
-        }
-
-        //------This Function handles the Follow Up---------
-        const followUp = await withRetry(async () => {
-            const response = await api.post('/orito/chat', {
-                messages: conversationHistory,
-                tools: TOOLS,
-                tool_choice: 'auto',
-                temperature: 0.9,
-                max_tokens: 512,
-            });
-            if (!response.status || response.status >= 400) {
-                throw new OritoError(
-                    'AI service error on follow-up',
-                    ErrorCodes.AI_SERVICE_ERROR,
-                    true,
-                    { status: response.status }
-                );
-            }
-            return response;
-        }, { maxRetries: 2 });
-
-        const followData = followUp.data;
-        const followChoice = followData.choices?.[0];
-        const reply = followChoice?.message?.content || getRecoveryResponse(ErrorCodes.AI_SERVICE_ERROR);
-        conversationHistory.push({ role: 'assistant', content: reply });
-        await saveConversationHistory();
-        await saveUserContext();
-        logInteractionToBackend('voice', userMessage, reply, toolsUsed).catch(() => { });
-        return reply;
-    };
-
-    try {
-
-        //------This Function handles the Res---------
-        const res = await withRetry(async () => {
-            const response = await api.post('/orito/chat', body);
-
-
-            if (!response.status || response.status >= 400) {
-                if (response.status === 503 || response.status === 429) {
-                    throw new OritoError(
-                        'AI service temporarily unavailable',
-                        ErrorCodes.AI_SERVICE_ERROR,
-                        true,
-                        { status: response.status }
-                    );
-                }
-                //------This Function handles the Error Info---------
-                const errorInfo = response.data || {};
-                throw new OritoError(
-                    errorInfo.error?.message || 'AI service error',
-                    ErrorCodes.AI_SERVICE_ERROR,
-                    false,
-                    { status: response.status, ...errorInfo }
-                );
-            }
-            return response;
-        }, { maxRetries: 2 });
-
-        const data = res.data;
-        const choice = data.choices?.[0];
-        if (!choice) return getRecoveryResponse(ErrorCodes.AI_SERVICE_ERROR);
-
-        const msg = choice.message;
-
-        if (msg.tool_calls && msg.tool_calls.length > 0) {
-            return await completeToolRound(msg);
-        }
-
-        if (forceTools) {
-            //------This Function handles the Forced Tool Res---------
-            const forcedToolRes = await withRetry(async () => {
-                const response = await api.post('/orito/chat', {
-                    messages: [
-                        ...conversationHistory,
-                        {
-                            role: 'system',
-                            content: 'For the latest user request, call at least one relevant tool before responding.',
-                        },
-                    ],
-                    tools: TOOLS,
-                    tool_choice: 'required',
-                    temperature: 0.4,
-                    max_tokens: 512,
-                });
-                if (!response.status || response.status >= 400) {
-                    throw new OritoError(
-                        'AI tool enforcement failed',
-                        ErrorCodes.AI_SERVICE_ERROR,
-                        true,
-                        { status: response.status }
-                    );
-                }
-                return response;
-            }, { maxRetries: 1 });
-
-            const forcedData = forcedToolRes.data;
-            const forcedChoice = forcedData.choices?.[0];
-            const forcedMsg = forcedChoice?.message;
-            if (forcedMsg?.tool_calls?.length) {
-                return await completeToolRound(forcedMsg);
-            }
-        }
-
-        const reply = msg.content || getRecoveryResponse(ErrorCodes.AI_SERVICE_ERROR);
-        conversationHistory.push({ role: 'assistant', content: reply });
-
-        await saveConversationHistory();
-        await saveUserContext();
-
-
-        logInteractionToBackend('voice', userMessage, reply, toolsUsed).catch(() => { });
-
-        return reply;
-    } catch (err: any) {
-
-        console.log('[ORITO] Send voice message error:', err);
-
-        const { code, recoverable } = classifyError(err);
-        const errorMessage = String(err?.message || '');
-
-        if (code === ErrorCodes.PERMISSION_DENIED) {
-            return "I'm not fully configured to respond yet. Please check the AI API key and permissions.";
-        }
-
-        if (/production models|deprecat|decommission|model.*not found/i.test(errorMessage)) {
-            return "My AI model setting needs an update. Please switch to a currently supported Groq model.";
-        }
-
-        if (recoverable) {
-            return getRecoveryResponse(code);
-        }
-
-        return "I'm having some trouble right now. Let's try again in a moment.";
-    }
+    return sendMessageStream(userMessage, () => { });
 }
 
 //------This Function handles the Generate Daily Insights---------
@@ -2765,16 +2475,12 @@ export async function generateDailyInsights(patientInfo: any, meds: any[]): Prom
     `;
 
     const body = {
-        messages: [
-            {
-                role: 'user',
-                content: `You are an empathetic medical AI assistant. Analyze the patient context and generate ONE single daily insight/suggestion.
+        user_message: `You are an empathetic medical AI assistant. Analyze the patient context and generate ONE single daily insight/suggestion.
             It should be specific, actionable, and caring.
             Return ONLY raw JSON (no markdown) in this format: { "title": "Short Title", "desc": "1-2 sentence description" }
 
-${context}`
-            }
-        ],
+${context}`,
+        messages: [],
         temperature: 0.7,
         max_tokens: 150,
     };
@@ -2782,7 +2488,7 @@ ${context}`
     try {
         const res = await api.post('/orito/chat', body);
         const data = res.data;
-        const content = data.choices?.[0]?.message?.content;
+        const content = data.message?.content;
         return content ? JSON.parse(content) : null;
     } catch (e) {
         console.log('Insight gen error', e);
@@ -2909,16 +2615,12 @@ export async function generateCalendarInsights(
     `;
 
     const body = {
-        messages: [
-            {
-                role: 'user',
-                content: `You are a helpful wellness AI. Generate practical daily health suggestions.
+        user_message: `You are a helpful wellness AI. Generate practical daily health suggestions.
                 Keep suggestions positive, actionable, and specific to the day.
                 Return ONLY raw JSON: { "title": "Short Activity Title (2-4 words)", "desc": "1-2 sentence actionable suggestion" }
 
-${context}`
-            }
-        ],
+${context}`,
+        messages: [],
         temperature: 0.7,
         max_tokens: 150,
     };
@@ -2926,7 +2628,7 @@ ${context}`
     try {
         const res = await api.post('/orito/chat', body);
         const data = res.data;
-        const content = data.choices?.[0]?.message?.content;
+        const content = data.message?.content;
         return content ? JSON.parse(content) : null;
     } catch (e) {
         console.log('Calendar insight error', e);
@@ -2961,20 +2663,8 @@ If a field cannot be determined from the image, omit it from the response.
 If no medication information is found, return an empty object: {}`;
 
     const body = {
-        messages: [
-            {
-                role: 'user',
-                content: [
-                    { type: 'text', text: prompt },
-                    {
-                        type: 'image_url',
-                        image_url: {
-                            url: `data:image/jpeg;base64,${imageBase64}`,
-                        },
-                    },
-                ],
-            },
-        ],
+        user_message: prompt,
+        messages: [],
         temperature: 0.1,
         max_tokens: 200,
     };
@@ -2982,7 +2672,7 @@ If no medication information is found, return an empty object: {}`;
     try {
         const res = await api.post('/orito/chat', body);
         const data = res.data;
-        const content = data.choices?.[0]?.message?.content;
+        const content = data.message?.content;
         if (content) {
 
             const jsonMatch = content.match(/\{[\s\S]*\}/);

@@ -26,6 +26,8 @@ class Settings(BaseSettings):
     
     groq_api_key: str = ""
     
+    nvidia_api_key: str = ""
+    
     
     secret_key: Optional[str] = None
     
