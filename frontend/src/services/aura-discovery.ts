@@ -1,5 +1,6 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import * as Network from 'expo-network';
+import api from './api';
 
 const AURA_KEY = 'aura_module_address';
 const AURA_PORT = 8001;
@@ -12,6 +13,13 @@ interface AuraDevice {
     ws_port: number;
     port?: number;
     version: string;
+}
+
+interface BackendAuraModule {
+    patient_uid: string;
+    ip: string;
+    port: number;
+    status: string;
 }
 
 type ConnectionState = 'disconnected' | 'connecting' | 'connected' | 'reconnecting';
@@ -94,17 +102,81 @@ async function getSubnetPrefix(): Promise<string | null> {
     return null;
 }
 
+//------This Function handles the Normalize Module---------
+function normalizeModule(module: BackendAuraModule): AuraDevice | null {
+    if (!module || !module.ip || !module.port) {
+        return null;
+    }
+
+    return {
+        service: 'AURA_MODULE',
+        hostname: module.patient_uid || '',
+        ip: module.ip,
+        ws_port: module.port,
+        port: module.port,
+        version: '1.0.0',
+    };
+}
+
+//------This Function handles the Discover Via Backend---------
+async function discoverViaBackend(): Promise<AuraDevice[]> {
+    try {
+        const response = await api.get('/aura/discover', {
+            params: { status: 'online' },
+        });
+
+        const modules = Array.isArray(response?.data?.modules) ? response.data.modules : [];
+        const devices: AuraDevice[] = [];
+        const seen = new Set<string>();
+
+        for (const module of modules) {
+            const normalized = normalizeModule(module as BackendAuraModule);
+            if (!normalized) {
+                continue;
+            }
+
+            const key = `${normalized.ip}:${normalized.ws_port}`;
+            if (seen.has(key)) {
+                continue;
+            }
+
+            seen.add(key);
+            devices.push(normalized);
+        }
+
+        return devices;
+    } catch {
+        return [];
+    }
+}
+
 //------This Function handles the Scan For Aura Module---------
 export async function scanForAuraModule(
     onProgress?: (percent: number) => void,
     onDeviceFound?: (device: AuraDevice) => void,
 ): Promise<void> {
+    const emitted = new Set<string>();
+    //------This Function handles the Emit Device---------
+    const emitDevice = (device: AuraDevice) => {
+        const key = `${device.ip}:${device.ws_port}`;
+        if (emitted.has(key)) {
+            return;
+        }
+        emitted.add(key);
+        onDeviceFound?.(device);
+    };
+
+    const backendDevices = await discoverViaBackend();
+    for (const device of backendDevices) {
+        emitDevice(device);
+    }
+    onProgress?.(5);
 
     const saved = await getSavedModule();
     if (saved) {
         const verified = await probeIp(saved.ip, saved.ws_port);
         if (verified) {
-            onDeviceFound?.(verified);
+            emitDevice(verified);
         }
     }
 
@@ -120,10 +192,10 @@ export async function scanForAuraModule(
         const ip = `${subnet}.${ending}`;
         const found = await probeIp(ip, AURA_PORT);
         if (found) {
-            onDeviceFound?.(found);
+            emitDevice(found);
         }
     }
-    onProgress?.(10);
+    onProgress?.(15);
 
     const BATCH_SIZE = 20;
     const allIps: string[] = [];
@@ -140,11 +212,11 @@ export async function scanForAuraModule(
 
         for (const result of results) {
             if (result) {
-                onDeviceFound?.(result);
+                emitDevice(result);
             }
         }
 
-        const percent = Math.min(10 + Math.round(((batchStart + BATCH_SIZE) / allIps.length) * 90), 99);
+        const percent = Math.min(15 + Math.round(((batchStart + BATCH_SIZE) / allIps.length) * 85), 99);
         onProgress?.(percent);
     }
 

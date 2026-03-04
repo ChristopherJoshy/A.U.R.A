@@ -383,19 +383,81 @@ async def heartbeat_from_device(
         )
 
 
+#------This Function returns pairing context---------
+@router.get("/pairing/context")
+async def get_pairing_context(
+    request: Request,
+    patient_uid: Optional[str] = Query(default=None),
+    uid: str = Depends(get_current_user_uid),
+):
+    target_uid = await _resolve_target_patient_uid(uid, patient_uid)
+    backend_url = str(request.base_url).rstrip("/")
+    return {
+        "patient_uid": target_uid,
+        "backend_url": backend_url,
+    }
+
+
 #------This Function discovers modules---------
 @router.get("/discover")
 async def discover_modules(
     status: Optional[str] = "online",
+    patient_uid: Optional[str] = None,
     uid: str = Depends(get_current_user_uid),
     aura_modules_db: AuraModulesDB = Depends(get_aura_modules_db),
 ):
-    modules = await aura_modules_db.list_modules(status=status, limit=100)
+    normalized_status = (status or "").strip().lower()
+    if normalized_status not in ("online", "offline", "all", ""):
+        raise HTTPException(
+            status_code=400,
+            detail="status must be one of: online, offline, all",
+        )
+    if normalized_status in ("all", ""):
+        normalized_status = None
 
-    return {
-        "modules": modules,
-        "count": len(modules),
-    }
+    requester = await User.find_one(User.firebase_uid == uid)
+    if not requester:
+        raise HTTPException(status_code=404, detail="User not found")
+
+    if patient_uid:
+        has_access = await check_patient_access(uid, patient_uid)
+        if not has_access:
+            raise HTTPException(
+                status_code=403,
+                detail="You don't have permission to access this patient's module",
+            )
+
+        module = await aura_modules_db.get_module(patient_uid)
+        modules = []
+        if module and (normalized_status is None or module.get("status") == normalized_status):
+            modules.append(module)
+        return {"modules": modules, "count": len(modules)}
+
+    if requester.role == UserRole.ADMIN:
+        modules = await aura_modules_db.list_modules(status=normalized_status, limit=100)
+        return {"modules": modules, "count": len(modules)}
+
+    target_uids: List[str] = []
+    if requester.role == UserRole.CAREGIVER:
+        target_uids.extend(requester.linked_patients or [])
+        target_uids.append(uid)
+    else:
+        target_uids.append(uid)
+
+    modules: List[dict] = []
+    seen_uids = set()
+    for target_uid in target_uids:
+        if not target_uid or target_uid in seen_uids:
+            continue
+        seen_uids.add(target_uid)
+        module = await aura_modules_db.get_module(target_uid)
+        if not module:
+            continue
+        if normalized_status is not None and module.get("status") != normalized_status:
+            continue
+        modules.append(module)
+
+    return {"modules": modules, "count": len(modules)}
 
 
 #------This Function gets module---------

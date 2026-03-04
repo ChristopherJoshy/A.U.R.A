@@ -246,16 +246,51 @@ def _validate_message(msg: dict) -> tuple[bool, Optional[str]]:
     if cmd == "connect":
         if "auth_token" not in msg:
             return False, "Missing 'auth_token' for connect command"
-        if "patient_uid" not in msg:
-            return False, "Missing 'patient_uid' for connect command"
+        if "patient_uid" in msg and not isinstance(msg.get("patient_uid"), str):
+            return False, "'patient_uid' must be a string"
         if "backend_url" in msg and not isinstance(msg.get("backend_url"), str):
             return False, "'backend_url' must be a string"
     
     return True, None
 
 
+#------This Function resolves patient UID from auth token----------
+async def _resolve_patient_uid_from_token(auth_token: str, backend_url: str) -> str:
+    token = (auth_token or "").strip()
+    normalized_backend_url = normalize_backend_url(backend_url)
+    if token.lower().startswith("bearer "):
+        token = token[7:].strip()
+
+    if not token or not normalized_backend_url:
+        return ""
+
+    timeout = aiohttp.ClientTimeout(total=8)
+    try:
+        async with aiohttp.ClientSession(timeout=timeout) as session:
+            async with session.get(
+                f"{normalized_backend_url}/auth/me",
+                headers={"Authorization": f"Bearer {token}"},
+            ) as response:
+                if response.status != 200:
+                    logger.warning(
+                        "[PAIRING] Failed to resolve patient UID from token: /auth/me returned %s",
+                        response.status,
+                    )
+                    return ""
+                payload = await response.json()
+                resolved_uid = str(payload.get("firebase_uid", "")).strip()
+                return resolved_uid
+    except Exception as exc:
+        logger.warning("[PAIRING] Token-based patient UID resolution failed: %s", exc)
+        return ""
+
+
 #------This Function applies pairing config from connected client----------
-async def _apply_pairing_runtime_config(patient_uid: str, backend_url: str):
+async def _apply_pairing_runtime_config(
+    patient_uid: str,
+    backend_url: str,
+    backend_auth_token: str,
+):
     try:
         backend_client = get_backend_client()
     except RuntimeError:
@@ -263,7 +298,11 @@ async def _apply_pairing_runtime_config(patient_uid: str, backend_url: str):
         return
 
     try:
-        success = await backend_client.apply_pairing_config(patient_uid, backend_url)
+        success = await backend_client.apply_pairing_config(
+            patient_uid,
+            backend_url,
+            backend_auth_token,
+        )
         if success:
             logger.info("[PAIRING] Runtime pairing config synced to backend client")
         else:
@@ -348,10 +387,12 @@ async def _ws_handler(request):
 
                 if cmd == "connect":
                     
-                    token = msg.get("auth_token", "")
-                    patient = msg.get("patient_uid", "")
+                    token = str(msg.get("auth_token", "")).strip()
+                    patient = str(msg.get("patient_uid", "")).strip()
                     incoming_backend_url = msg.get("backend_url", "")
                     normalized_backend_url = normalize_backend_url(incoming_backend_url)
+                    if token.lower().startswith("bearer "):
+                        token = token[7:].strip()
                     
                     if not token or len(token) < 10:
                         logger.warning("[WS] Invalid auth token rejected")
@@ -361,41 +402,39 @@ async def _ws_handler(request):
                             "error": "invalid_token"
                         })
                         continue
-                    
+
+                    existing_backend_url = normalize_backend_url(settings.backend_url or "")
+                    pairing_backend_url = normalized_backend_url or existing_backend_url or ""
+                    pairing_sync_started = False
+
+                    if not patient and pairing_backend_url:
+                        patient = await _resolve_patient_uid_from_token(token, pairing_backend_url)
+                        if patient:
+                            logger.info("[PAIRING] Resolved patient_uid from auth token")
+
                     if not patient:
-                        logger.warning("[WS] Missing patient_uid rejected")
+                        logger.warning("[WS] Missing patient_uid and token resolution failed")
                         await ws.send_json({
-                            "type": "connected", 
-                            "status": "error", 
-                            "error": "missing_patient_uid"
+                            "type": "connected",
+                            "status": "error",
+                            "error": "missing_patient_uid",
                         })
                         continue
-                    
+
                     
                     _session_auth[ws] = {
                         "patient_uid": patient,
                         "auth_token": token,
                     }
                     settings.patient_uid = patient
+                    settings.backend_auth_token = token
 
-                    pairing_sync_started = False
-                    pairing_backend_url = normalized_backend_url
-                    existing_backend_url = normalize_backend_url(settings.backend_url or "")
-
-                    if normalized_backend_url:
-                        settings.backend_url = normalized_backend_url
-                        save_pairing_config(patient, normalized_backend_url)
+                    if pairing_backend_url:
+                        settings.backend_url = pairing_backend_url
+                        save_pairing_config(patient, pairing_backend_url, token)
                         pairing_sync_started = True
                         asyncio.create_task(
-                            _apply_pairing_runtime_config(patient, normalized_backend_url)
-                        )
-                    elif (
-                        existing_backend_url
-                        and existing_backend_url not in ("http://localhost:8000", "http://localhost:8001")
-                    ):
-                        pairing_sync_started = True
-                        asyncio.create_task(
-                            _apply_pairing_runtime_config(patient, settings.backend_url)
+                            _apply_pairing_runtime_config(patient, pairing_backend_url, token)
                         )
 
                     logger.info(f"[WS] Client authenticated: patient_uid={patient[:8]}...")
@@ -403,6 +442,8 @@ async def _ws_handler(request):
                         logger.info("[PAIRING] Received backend_url from paired client: %s", normalized_backend_url)
                     elif incoming_backend_url:
                         logger.warning("[PAIRING] Ignoring invalid backend_url from paired client: %s", incoming_backend_url)
+                    elif pairing_backend_url:
+                        logger.info("[PAIRING] Using existing backend_url: %s", pairing_backend_url)
                     
                     if settings.auto_face_recognition_enabled and len(_connected_clients) == 1:
                         _auto_face_recognition_enabled = True
@@ -414,7 +455,8 @@ async def _ws_handler(request):
                             "type": "connected",
                             "status": "ok",
                             "pairing_config_applied": pairing_sync_started,
-                            "backend_url": pairing_backend_url or existing_backend_url,
+                            "backend_url": pairing_backend_url,
+                            "patient_uid": patient,
                         }
                     )
 

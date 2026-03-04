@@ -145,9 +145,17 @@ class BackendClient:
         return False
 
     #------This Function applies paired runtime configuration---------
-    async def apply_pairing_config(self, patient_uid: str, backend_url: str) -> bool:
+    async def apply_pairing_config(
+        self,
+        patient_uid: str,
+        backend_url: str,
+        backend_auth_token: Optional[str] = None,
+    ) -> bool:
         normalized_patient_uid = (patient_uid or "").strip()
         normalized_backend_url = normalize_backend_url(backend_url)
+        normalized_backend_auth_token = (backend_auth_token or "").strip()
+        if normalized_backend_auth_token.lower().startswith("bearer "):
+            normalized_backend_auth_token = normalized_backend_auth_token[7:].strip()
 
         if not normalized_patient_uid:
             logger.warning("[PAIRING] Ignoring pairing update: patient_uid is empty")
@@ -165,7 +173,13 @@ class BackendClient:
             self.patient_uid = normalized_patient_uid
             settings.patient_uid = normalized_patient_uid
             settings.backend_url = normalized_backend_url
-            save_pairing_config(normalized_patient_uid, normalized_backend_url)
+            if normalized_backend_auth_token:
+                settings.backend_auth_token = normalized_backend_auth_token
+            save_pairing_config(
+                normalized_patient_uid,
+                normalized_backend_url,
+                settings.backend_auth_token,
+            )
 
             if config_changed:
                 self.registered = False

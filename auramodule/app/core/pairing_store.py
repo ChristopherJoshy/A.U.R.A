@@ -40,22 +40,36 @@ def load_pairing_config() -> Dict[str, str]:
     if not patient_uid or not backend_url:
         return {}
 
+    backend_auth_token = str(raw_data.get("backend_auth_token", "")).strip()
+    if backend_auth_token.lower().startswith("bearer "):
+        backend_auth_token = backend_auth_token[7:].strip()
+
     return {
         "patient_uid": patient_uid,
         "backend_url": backend_url,
+        "backend_auth_token": backend_auth_token,
     }
 
 
 #------This Function saves pairing config to disk---------
-def save_pairing_config(patient_uid: str, backend_url: str) -> bool:
+def save_pairing_config(
+    patient_uid: str,
+    backend_url: str,
+    backend_auth_token: Optional[str] = None,
+) -> bool:
     normalized_backend_url = normalize_backend_url(backend_url)
     normalized_patient_uid = (patient_uid or "").strip()
     if not normalized_patient_uid or not normalized_backend_url:
         return False
 
+    normalized_token = (backend_auth_token or "").strip()
+    if normalized_token.lower().startswith("bearer "):
+        normalized_token = normalized_token[7:].strip()
+
     payload = {
         "patient_uid": normalized_patient_uid,
         "backend_url": normalized_backend_url,
+        "backend_auth_token": normalized_token,
         "updated_at": int(time.time()),
     }
 
@@ -79,9 +93,11 @@ def apply_pairing_config_to_settings(overwrite_existing: bool = False) -> bool:
 
     current_patient_uid = (settings.patient_uid or "").strip()
     current_backend_url = normalize_backend_url(settings.backend_url or "")
+    current_backend_auth_token = (settings.backend_auth_token or "").strip()
 
     should_apply_patient_uid = overwrite_existing or not current_patient_uid
     should_apply_backend_url = overwrite_existing or not current_backend_url
+    should_apply_backend_auth_token = overwrite_existing or not current_backend_auth_token
 
     if current_backend_url in ("http://localhost:8000", "http://localhost:8001"):
         should_apply_backend_url = True
@@ -95,6 +111,12 @@ def apply_pairing_config_to_settings(overwrite_existing: bool = False) -> bool:
         runtime_backend_url = (settings.backend_url or "").rstrip("/")
         if paired_config["backend_url"] != runtime_backend_url:
             settings.backend_url = paired_config["backend_url"]
+            changed = True
+
+    paired_backend_auth_token = (paired_config.get("backend_auth_token") or "").strip()
+    if should_apply_backend_auth_token and paired_backend_auth_token:
+        if paired_backend_auth_token != current_backend_auth_token:
+            settings.backend_auth_token = paired_backend_auth_token
             changed = True
 
     if changed:

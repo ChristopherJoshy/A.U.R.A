@@ -106,10 +106,30 @@ export default function ConnectAuraScreen() {
     //------This Function handles the Handle Connect---------
     async function handleConnect(ip: string, port: number) {
         setConnecting(true);
-        const runtimeBackendUrl =
+        const fallbackBackendUrl =
             typeof api.defaults.baseURL === 'string' ? api.defaults.baseURL : '';
+        let pairingPatientUid = user?.firebase_uid || '';
+        let pairingBackendUrl = fallbackBackendUrl;
 
-        connectToAura(ip, port, user?.firebase_uid || '', token || '', runtimeBackendUrl, (msg) => {
+        try {
+            const contextResp = await api.get('/aura/pairing/context');
+            const contextData = contextResp?.data || {};
+            if (typeof contextData.patient_uid === 'string' && contextData.patient_uid.trim()) {
+                pairingPatientUid = contextData.patient_uid.trim();
+            }
+            if (typeof contextData.backend_url === 'string' && contextData.backend_url.trim()) {
+                pairingBackendUrl = contextData.backend_url.trim();
+            }
+        } catch {
+        }
+
+        if (!pairingPatientUid) {
+            Alert.alert('Connection Failed', 'Unable to resolve patient identity for pairing.');
+            setConnecting(false);
+            return;
+        }
+
+        connectToAura(ip, port, pairingPatientUid, token || '', pairingBackendUrl, (msg) => {
             if (msg.type === 'connected') {
                 setConnection(ip, port);
                 saveAuraAddress({
@@ -124,7 +144,7 @@ export default function ConnectAuraScreen() {
                 api.post('/aura/register', {
                     ip: ip,
                     port: port,
-                    patient_uid: user?.firebase_uid || '',
+                    patient_uid: pairingPatientUid,
                 }).catch(() => { });
 
 
