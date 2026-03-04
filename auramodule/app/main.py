@@ -6,6 +6,7 @@ import platform
 import re
 import select
 import signal
+import socket
 import subprocess
 import sys
 import threading
@@ -29,7 +30,11 @@ from app.services.microphone import continuous_mic
 from app.services.conversation import summarize_conversation
 from app.ws_server import start_server, shutdown_streams, _get_local_ip
 from app.core.config import settings
-from app.core.pairing_store import apply_pairing_config_to_settings, normalize_backend_url
+from app.core.pairing_store import (
+    apply_pairing_config_to_settings,
+    load_pairing_config,
+    normalize_backend_url,
+)
 
 
 GREEN = "\033[92m"
@@ -276,6 +281,97 @@ def print_section(title):
     print(f"\n{BLUE}{BOLD}── {title} ──{RESET}\n")
 
 
+#------This Function checks if patient UID is configured---------
+def is_configured_patient_uid(patient_uid: str) -> bool:
+    normalized = (patient_uid or "").strip()
+    return bool(normalized and normalized != "your_patient_uid_here")
+
+
+#------This Function finds an available service port---------
+def resolve_available_service_port(preferred_port: int, max_attempts: int = 30) -> int:
+    # Try the requested port first, then scan a small range.
+    for offset in range(0, max_attempts + 1):
+        candidate_port = preferred_port + offset
+        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        try:
+            sock.bind(("0.0.0.0", candidate_port))
+            return candidate_port
+        except OSError:
+            continue
+        finally:
+            sock.close()
+    return preferred_port
+
+
+#------This Function checks whether terminal is interactive---------
+def is_interactive_terminal() -> bool:
+    return bool(sys.stdin.isatty() and sys.stdout.isatty())
+
+
+#------This Function gets installed ollama models---------
+def get_installed_ollama_models() -> List[str]:
+    try:
+        result = subprocess.run(
+            ["ollama", "list"],
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+        if result.returncode != 0:
+            return []
+
+        models: List[str] = []
+        for line in result.stdout.splitlines():
+            clean_line = line.strip()
+            if not clean_line or clean_line.upper().startswith("NAME"):
+                continue
+            model_name = clean_line.split()[0]
+            if model_name and model_name not in models:
+                models.append(model_name)
+        return models
+    except Exception:
+        return []
+
+
+#------This Function prompts user for ollama model---------
+def prompt_ollama_model_selection(installed_models: List[str]) -> Optional[str]:
+    if not is_interactive_terminal():
+        return None
+
+    print_section("Ollama Model Selection")
+    if installed_models:
+        print_status("●", "Installed models detected:", CYAN)
+        for idx, model in enumerate(installed_models, start=1):
+            print(f"  {idx}. {model}")
+        print(f"  n. Pull new model from Ollama")
+        print(f"  s. Skip for now")
+        choice = input("Select model number, 'n', or 's' [s]: ").strip().lower()
+        if not choice or choice == "s":
+            return None
+        if choice.isdigit():
+            index = int(choice) - 1
+            if 0 <= index < len(installed_models):
+                return installed_models[index]
+            return None
+        if choice != "n":
+            return None
+
+    model_to_pull = input(
+        f"Enter model to pull from Ollama (example: {settings.ollama_model}): "
+    ).strip()
+    if not model_to_pull:
+        return None
+
+    confirm = input(f"Pull '{model_to_pull}' now? [y/N]: ").strip().lower()
+    if confirm != "y":
+        return None
+
+    if pull_model_with_progress(model_to_pull):
+        return model_to_pull
+
+    return None
+
+
 #------This Function checks/installs PyAudio----------
 def check_pyaudio():
     print_section("Audio Dependencies")
@@ -482,8 +578,10 @@ def update_ollama_model(model_name: str) -> bool:
 #------This Function checks/installs Ollama with auto-update--------
 def check_ollama():
     print_section("Ollama Installation")
-    
-    check_pip()
+    auto_install = os.environ.get("AUTO_INSTALL_DEPS", "false").lower() == "true"
+    prompt_model = os.environ.get("AURAMODULE_PROMPT_OLLAMA_MODEL", "true").lower() == "true"
+    if auto_install:
+        check_pip()
     
     try:
         result = subprocess.run(
@@ -494,7 +592,34 @@ def check_ollama():
         )
         if result.returncode == 0:
             print_status("●", f"Ollama installed: {CYAN}{result.stdout.strip()}{RESET}")
-            
+
+            installed_models = get_installed_ollama_models()
+            if settings.ollama_model in installed_models:
+                print_status("●", f"{settings.ollama_model} model installed")
+                if not auto_install:
+                    print_status("●", "Auto model updates disabled (AUTO_INSTALL_DEPS=false)", YELLOW)
+                else:
+                    if settings.auto_update_models:
+                        print(f"\n  {BLUE}›{RESET} Checking for model updates...")
+                        if update_ollama_model(settings.ollama_model):
+                            print_status("●", f"{settings.ollama_model} is up to date")
+                return True
+
+            print_status(
+                "●",
+                f"Configured model '{settings.ollama_model}' is not installed",
+                YELLOW,
+            )
+            if not auto_install:
+                if prompt_model:
+                    selected_model = prompt_ollama_model_selection(installed_models)
+                    if selected_model:
+                        settings.ollama_model = selected_model
+                        print_status("●", f"Using model: {CYAN}{settings.ollama_model}{RESET}")
+                        return True
+                print_status("●", "No model selected. Orito features may be unavailable", YELLOW)
+                return False
+
             print(f"\n  {BLUE}›{RESET} Checking {settings.ollama_model} model...")
             model_result = subprocess.run(
                 ["ollama", "list"],
@@ -534,6 +659,10 @@ def check_ollama():
         return False
     
     print_status("●", "Ollama not installed", YELLOW)
+    if not auto_install:
+        print_status("●", "Auto-install disabled (AUTO_INSTALL_DEPS=false)", YELLOW)
+        print(f"  {CYAN}→{RESET} Install manually or run once with AUTO_INSTALL_DEPS=true")
+        return False
     print(f"  {CYAN}→{RESET} Installing Ollama...")
     
     max_retries = 3
@@ -863,8 +992,15 @@ async def main():
     check_models()
 
     apply_pairing_config_to_settings(overwrite_existing=False)
+    pairing_state = load_pairing_config()
+    pairing_completed = bool(
+        (pairing_state.get("patient_uid", "") or "").strip()
+        and normalize_backend_url(pairing_state.get("backend_url", "") or "")
+    )
     runtime_config_ready = bool(
-        (settings.patient_uid or "").strip()
+        pairing_completed
+        and
+        is_configured_patient_uid(settings.patient_uid)
         and normalize_backend_url(settings.backend_url or "")
     )
     
@@ -878,7 +1014,7 @@ async def main():
     else:
         print_status("●", "BACKEND_URL not configured", RED)
     
-    if patient_uid and patient_uid != "your_patient_uid_here":
+    if is_configured_patient_uid(patient_uid) and pairing_completed:
         print_status("●", f"PATIENT_UID: {CYAN}{patient_uid[:8]}...{RESET}")
     else:
         print_status("●", "PATIENT_UID not configured", RED)
@@ -905,10 +1041,28 @@ async def main():
             "Connect from paired app to push patient_uid and backend_url."
         )
         print_status("●", "Running in unpaired mode", YELLOW)
+        print_status("●", "Backend registration will wait until pairing is completed", YELLOW)
+
+    preferred_port = settings.http_port
+    resolved_port = resolve_available_service_port(preferred_port)
+    if resolved_port != preferred_port:
+        logger.warning(
+            "[AURA] Port %s is busy. Falling back to %s",
+            preferred_port,
+            resolved_port,
+        )
+        settings.http_port = resolved_port
+        settings.ws_port = resolved_port
+        print_status("●", f"Port {preferred_port} busy, using {resolved_port}", YELLOW)
     
     print_section("Starting Services")
     
-    print_status("●", f"Patient UID: {settings.patient_uid[:8]}..." if settings.patient_uid else "NOT SET")
+    print_status(
+        "●",
+        f"Patient UID: {settings.patient_uid[:8]}..."
+        if is_configured_patient_uid(settings.patient_uid)
+        else "Patient UID: NOT SET (awaiting pairing)",
+    )
     print_status("●", f"Server port: {settings.http_port}")
     print_status("●", f"Camera index: {settings.camera_index}")
     print_status("●", f"Whisper model: {settings.whisper_model} ({settings.whisper_model_size})")
@@ -978,6 +1132,9 @@ async def main():
     print_status("●", "Camera started (always-on mode)")
 
     async def on_summarize(transcripts):
+        if not is_configured_patient_uid(settings.patient_uid):
+            logger.info("[AURA] Skipping summarization: pairing not completed yet")
+            return
         logger.info(f"[AURA] Summarization triggered with {len(transcripts)} transcripts")
         try:
             summary = await summarize_conversation(
