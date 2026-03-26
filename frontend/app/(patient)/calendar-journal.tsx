@@ -1,6 +1,6 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { View, Text, StyleSheet, ScrollView, TouchableOpacity, ActivityIndicator, Alert } from 'react-native';
-import { useLocalSearchParams, useRouter } from 'expo-router';
+import { useLocalSearchParams, useRouter, useFocusEffect } from 'expo-router';
 import Header from '../../src/components/Header';
 import Screen from '../../src/components/Screen';
 import api from '../../src/services/api';
@@ -91,9 +91,11 @@ export default function CalendarJournalScreen() {
         }
     }, []);
 
-    useEffect(() => {
-        load();
-    }, [load]);
+    useFocusEffect(
+        useCallback(() => {
+            load();
+        }, [load])
+    );
 
     //------This Function handles the Day Entries---------
     const dayEntries = useMemo(() => {

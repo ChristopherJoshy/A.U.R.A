@@ -1,6 +1,6 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { View, Text, StyleSheet, ScrollView, TouchableOpacity, ActivityIndicator, Alert } from 'react-native';
-import { useLocalSearchParams, useRouter } from 'expo-router';
+import { useLocalSearchParams, useRouter, useFocusEffect } from 'expo-router';
 import * as Haptics from 'expo-haptics';
 import Header from '../../src/components/Header';
 import Screen from '../../src/components/Screen';
@@ -99,7 +99,7 @@ export default function CalendarMedicationsScreen() {
     const load = useCallback(async () => {
         setLoading(true);
         try {
-            const res = await api.get('/medications/');
+            const res = await api.get('/medications/', { params: { _t: Date.now() } });
             setMeds(res.data || []);
         } catch (error) {
             console.error('[CalendarMedications] load failed', error);
@@ -109,9 +109,11 @@ export default function CalendarMedicationsScreen() {
         }
     }, []);
 
-    useEffect(() => {
-        load();
-    }, [load]);
+    useFocusEffect(
+        useCallback(() => {
+            load();
+        }, [load])
+    );
 
     //------This Function handles the Active Meds---------
     const activeMeds = useMemo(() => meds.filter((m) => m.is_active), [meds]);
@@ -181,13 +183,17 @@ export default function CalendarMedicationsScreen() {
 
     //------This Function handles the Mark Taken---------
     async function markTaken(id: string) {
+        console.log(`[CalendarMedications] markTaken triggered for id: ${id}`);
         try {
-            await api.post(`/medications/${id}/take`);
+            const endpoint = `/medications/${id}/take`;
+            console.log(`[CalendarMedications] Sending POST to ${endpoint}`);
+            const response = await api.post(endpoint, {});
+            console.log(`[CalendarMedications] Backend Response:`, response.status);
             Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
             load();
         } catch (error) {
             console.error('[CalendarMedications] mark taken failed', error);
-            Alert.alert('Error', 'Could not mark medication as taken');
+            Alert.alert('Error', 'Could not mark medication as taken. Is the backend reachable?');
         }
     }
 

@@ -1,4 +1,4 @@
-import api from './api';
+import api, { getCurrentBackendBaseUrl } from './api';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import Constants from 'expo-constants';
 import { patientDataService } from './patientData';
@@ -2307,15 +2307,7 @@ async function triggerAutomaticSosIfNeeded(message: string): Promise<string | nu
 
 //------This Function resolves the backend base URL---------
 function getBackendBaseUrl(): string {
-    const manifestExtra =
-        (Constants as any)?.manifest2?.extra?.expoClient?.extra ||
-        (Constants as any)?.manifest?.extra ||
-        Constants.expoConfig?.extra;
-    return (
-        process.env.EXPO_PUBLIC_BACKEND_URL ||
-        manifestExtra?.backendUrl ||
-        'http://10.0.2.2:8001'
-    ).replace(/\/+$/, '');
+    return getCurrentBackendBaseUrl();
 }
 
 //------This Function builds a local fallback response for dev auth sessions---------

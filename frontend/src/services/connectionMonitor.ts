@@ -1,5 +1,6 @@
 import { AppState, AppStateStatus } from 'react-native';
 import api from './api';
+import { probeAndSelectReachableBackend } from './api';
 
 type ConnectionListener = (connected: boolean, pingTime?: number) => void;
 
@@ -8,15 +9,15 @@ class ConnectionMonitor {
     private isConnected: boolean = true;
     private lastPingTime: number = 0;
     private pollingInterval: NodeJS.Timeout | null = null;
-    private currentPollingDelay: number = 10000;
-    private readonly BASE_DELAY = 10000;
-    private readonly MAX_DELAY = 30000;
+    private currentPollingDelay: number = 15000;
+    private readonly BASE_DELAY = 15000;
+    private readonly MAX_DELAY = 60000;
     private retryCount: number = 0;
     private appState: AppStateStatus = 'active';
     private consecutiveFailures: number = 0;
     private consecutiveSuccesses: number = 0;
-    private readonly FAILURE_THRESHOLD = 3;
-    private readonly SUCCESS_THRESHOLD = 2;
+    private readonly FAILURE_THRESHOLD = 5;
+    private readonly SUCCESS_THRESHOLD = 1;
     private lastStateChange: number = 0;
     private readonly MIN_STATE_CHANGE_DELAY = 2000;
 
@@ -70,7 +71,11 @@ class ConnectionMonitor {
         const startTime = Date.now();
         
         try {
-            await api.get('/health', { timeout: 3000 });
+            // Any HTTP response means the backend is reachable across the network.
+            await api.get('/health', {
+                timeout: 8000,
+                validateStatus: () => true,
+            });
             const pingTime = Date.now() - startTime;
             
             this.lastPingTime = pingTime;
@@ -93,6 +98,27 @@ class ConnectionMonitor {
             
             return true;
         } catch (error) {
+            const recoveredViaFailover = await probeAndSelectReachableBackend(5000);
+            if (recoveredViaFailover) {
+                const pingTime = Date.now() - startTime;
+                this.lastPingTime = pingTime;
+                this.consecutiveFailures = 0;
+                this.consecutiveSuccesses++;
+
+                if (!this.isConnected) {
+                    const now = Date.now();
+                    if (now - this.lastStateChange >= this.MIN_STATE_CHANGE_DELAY) {
+                        this.retryCount = 0;
+                        this.currentPollingDelay = this.BASE_DELAY;
+                        this.isConnected = true;
+                        this.lastStateChange = now;
+                        this.notifyListeners(true, pingTime);
+                    }
+                }
+
+                return true;
+            }
+
             this.consecutiveSuccesses = 0;
             this.consecutiveFailures++;
             this.retryCount++;

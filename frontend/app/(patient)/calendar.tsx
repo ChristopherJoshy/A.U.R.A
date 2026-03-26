@@ -7,7 +7,7 @@ import {
     ScrollView,
     ActivityIndicator,
 } from 'react-native';
-import { useRouter } from 'expo-router';
+import { useRouter, useFocusEffect } from 'expo-router';
 import * as Haptics from 'expo-haptics';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { useAuth } from '../../src/context/auth';
@@ -225,15 +225,19 @@ export default function CalendarScreen() {
         }
     }, [dateKey]);
 
-    useEffect(() => {
-        if (!authLoading && user) {
-            loadRemoteData();
-        }
-    }, [authLoading, user, loadRemoteData]);
+    useFocusEffect(
+        useCallback(() => {
+            if (!authLoading && user) {
+                loadRemoteData();
+            }
+        }, [authLoading, user, loadRemoteData])
+    );
 
-    useEffect(() => {
-        loadLocalData();
-    }, [loadLocalData]);
+    useFocusEffect(
+        useCallback(() => {
+            loadLocalData();
+        }, [loadLocalData])
+    );
 
     //------This Function handles the Active Meds---------
     const activeMeds = useMemo(() => meds.filter((m) => m.is_active), [meds]);

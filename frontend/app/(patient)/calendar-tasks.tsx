@@ -11,13 +11,14 @@ import {
     Platform,
     ActivityIndicator,
 } from 'react-native';
-import { useLocalSearchParams, useRouter } from 'expo-router';
+import { useLocalSearchParams, useRouter, useFocusEffect } from 'expo-router';
 import * as Haptics from 'expo-haptics';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import Header from '../../src/components/Header';
 import Screen from '../../src/components/Screen';
 import { colors, fonts, spacing, radius } from '../../src/theme';
 import { Ionicons } from '@expo/vector-icons';
+import { notificationService } from '../../src/services/notifications';
 
 interface CustomTask {
     id: string;
@@ -119,9 +120,11 @@ export default function CalendarTasksScreen() {
         }
     }, [dateKey]);
 
-    useEffect(() => {
-        loadTasks();
-    }, [loadTasks]);
+    useFocusEffect(
+        useCallback(() => {
+            loadTasks();
+        }, [loadTasks])
+    );
 
     //------This Function handles the Persist---------
     async function persist(nextTasks: CustomTask[]) {
@@ -158,6 +161,9 @@ export default function CalendarTasksScreen() {
             setNewTaskHour('09');
             setNewTaskMinute('00');
             setShowComposer(false);
+            
+            await notificationService.scheduleTaskNotification(task, dateKey);
+            
             Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
         } catch (error) {
             console.error('[CalendarTasks] save failed', error);
@@ -175,6 +181,14 @@ export default function CalendarTasksScreen() {
         ));
         try {
             await persist(nextTasks);
+            
+            const updatedTask = nextTasks.find(t => t.id === id);
+            if (updatedTask?.completed) {
+                await notificationService.cancelTaskNotification(id);
+            } else if (updatedTask) {
+                await notificationService.scheduleTaskNotification(updatedTask, dateKey);
+            }
+            
             Haptics.selectionAsync();
         } catch (error) {
             console.error('[CalendarTasks] toggle failed', error);
@@ -188,6 +202,7 @@ export default function CalendarTasksScreen() {
         const nextTasks = tasks.filter((task) => task.id !== id);
         try {
             await persist(nextTasks);
+            await notificationService.cancelTaskNotification(id);
             Haptics.selectionAsync();
         } catch (error) {
             console.error('[CalendarTasks] delete failed', error);

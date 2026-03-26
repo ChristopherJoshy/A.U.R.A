@@ -8,6 +8,7 @@ try {
 
 import { Alert, Platform } from 'react-native';
 import AsyncStorage from '@react-native-async-storage/async-storage';
+import * as Notifications from 'expo-notifications';
 import api from './api';
 
 //------This Function handles the Create Messaging Stub---------
@@ -44,6 +45,16 @@ class NotificationService {
       } else {
         this.messagingInstance = createMessagingStub();
       }
+      
+      Notifications.setNotificationHandler({
+        handleNotification: async () => ({
+          shouldShowAlert: true,
+          shouldPlaySound: true,
+          shouldSetBadge: false,
+          shouldShowBanner: true,
+          shouldShowList: true,
+        } as any),
+      });
 
       this.messagingInstance.setBackgroundMessageHandler(async (remoteMessage: any) => {
         console.log('Background notification:', remoteMessage);
@@ -146,6 +157,88 @@ class NotificationService {
         break;
       default:
         console.log('Unknown notification type:', data.type);
+    }
+  }
+
+  //------This Function handles the Sync Medication Notifications---------
+  async syncMedicationNotifications(medications: any[]) {
+    try {
+      const scheduled = await Notifications.getAllScheduledNotificationsAsync();
+      for (const req of scheduled) {
+        if (req.identifier.startsWith('med_')) {
+          await Notifications.cancelScheduledNotificationAsync(req.identifier);
+        }
+      }
+      
+      for (const med of medications) {
+        if (med.is_active === false) continue;
+        const times = med.schedule_times || [];
+        for (const time of times) {
+          const [h, m] = time.split(':');
+          if (h !== undefined && m !== undefined) {
+            await Notifications.scheduleNotificationAsync({
+              identifier: `med_${med.id || med.name}_${time}`,
+              content: {
+                title: 'Medication Reminder',
+                body: `Time to take ${med.name}${med.dosage ? ` (${med.dosage})` : ''}`,
+                sound: true,
+                data: { type: 'medication' },
+              },
+            trigger: {
+                hour: parseInt(h, 10),
+                minute: parseInt(m, 10),
+                repeats: true,
+              } as any,
+            });
+          }
+        }
+      }
+      console.log('Medication notifications synchronized');
+    } catch (error) {
+      console.log('Failed to sync medication notifications', error);
+    }
+  }
+
+  //------This Function handles the Schedule Task Notification---------
+  async scheduleTaskNotification(task: any, dateKey: string) {
+    try {
+      const parts = dateKey.split('-');
+      if (parts.length !== 3) return;
+      const [year, month, day] = parts;
+      const [h, m] = (task.time || '00:00').split(':');
+      
+      const triggerDate = new Date(
+        parseInt(year, 10),
+        parseInt(month, 10) - 1,
+        parseInt(day, 10),
+        parseInt(h, 10),
+        parseInt(m, 10),
+        0
+      );
+      
+      if (triggerDate.getTime() > Date.now()) {
+        await Notifications.scheduleNotificationAsync({
+          identifier: `task_${task.id}`,
+          content: {
+            title: `Task: ${task.title}`,
+            body: `It's time for your scheduled task.`,
+            sound: true,
+            data: { type: 'task' },
+          },
+          trigger: { date: triggerDate } as any,
+        });
+      }
+    } catch (error) {
+      console.log('Failed to schedule task notification', error);
+    }
+  }
+
+  //------This Function handles the Cancel Task Notification---------
+  async cancelTaskNotification(taskId: string) {
+    try {
+      await Notifications.cancelScheduledNotificationAsync(`task_${taskId}`);
+    } catch (error) {
+      console.log('Failed to cancel task notification', error);
     }
   }
 

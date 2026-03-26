@@ -99,10 +99,10 @@ android {
     }
     signingConfigs {
         debug {
-            storeFile file('aura-release.keystore')
-            storePassword 'aura2024secure'
-            keyAlias 'aurakey'
-            keyPassword 'aura2024secure'
+            storeFile file(System.properties['user.home'] + '/.android/debug.keystore')
+            storePassword 'android'
+            keyAlias 'androiddebugkey'
+            keyPassword 'android'
         }
         release {
             storeFile file('aura-release.keystore')
@@ -113,7 +113,7 @@ android {
     }
     buildTypes {
         debug {
-            signingConfig signingConfigs.release
+            signingConfig signingConfigs.debug
         }
         release {
             signingConfig signingConfigs.release
