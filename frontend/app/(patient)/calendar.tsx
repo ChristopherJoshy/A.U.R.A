@@ -195,26 +195,21 @@ export default function CalendarScreen() {
             return;
         }
         setLoading(true);
-        try {
-            const [medsRes, journalRes, remindersRes] = await Promise.allSettled([
-                api.get('/medications/'),
-                api.get('/journal/'),
-                api.get('/reminders/', { params: { status: 'all', limit: 200 } }),
-            ]);
-            if (medsRes.status === 'fulfilled') {
-                setMeds(medsRes.value.data || []);
-            }
-            if (journalRes.status === 'fulfilled') {
-                setJournalEntries(journalRes.value.data || []);
-            }
-            if (remindersRes.status === 'fulfilled') {
-                setReminders(remindersRes.value.data || []);
-            }
-        } catch (error) {
-            console.error('[Calendar] failed to load overview data', error);
-        } finally {
-            setLoading(false);
+        const [medsRes, journalRes, remindersRes] = await Promise.allSettled([
+            api.get('/medications/'),
+            api.get('/journal/'),
+            api.get('/reminders/', { params: { status: 'all', limit: 200 } }),
+        ]);
+        if (medsRes.status === 'fulfilled') {
+            setMeds(medsRes.value.data || []);
         }
+        if (journalRes.status === 'fulfilled') {
+            setJournalEntries(journalRes.value.data || []);
+        }
+        if (remindersRes.status === 'fulfilled') {
+            setReminders(remindersRes.value.data || []);
+        }
+        setLoading(false);
     }, [user]);
 
     //------This Function handles the Load Local Data---------

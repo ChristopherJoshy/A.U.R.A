@@ -10,6 +10,7 @@ import {
     KeyboardAvoidingView,
     Platform,
     ActivityIndicator,
+    RefreshControl,
 } from 'react-native';
 import { useLocalSearchParams, useRouter, useFocusEffect } from 'expo-router';
 import * as Haptics from 'expo-haptics';
@@ -111,6 +112,7 @@ export default function CalendarTasksScreen() {
 
     const [tasks, setTasks] = useState<CustomTask[]>([]);
     const [loading, setLoading] = useState(true);
+    const [refreshing, setRefreshing] = useState(false);
     const [loadingId, setLoadingId] = useState<string | null>(null);
     const [saving, setSaving] = useState(false);
     const [showComposer, setShowComposer] = useState(false);
@@ -147,8 +149,8 @@ export default function CalendarTasksScreen() {
     }
 
     //------This Function handles the Load Tasks---------
-    const loadTasks = useCallback(async () => {
-        setLoading(true);
+    const loadTasks = useCallback(async (silent = false) => {
+        if (!silent) setRefreshing(true);
         try {
             const res = await api.get('/reminders/', { params: { status: 'all', limit: 200, _t: Date.now() } });
             const reminders: Reminder[] = res.data || [];
@@ -156,12 +158,16 @@ export default function CalendarTasksScreen() {
             const mapped = dayReminders.map(reminderToTask);
             mapped.sort((a, b) => toMinutes(a.time) - toMinutes(b.time));
             setTasks(mapped);
+            setLoading(false);
         } catch (error: any) {
             console.error('[CalendarTasks] load failed:', error?.response?.data || error?.message);
-            Alert.alert('Error', 'Could not load tasks from server. Pull down to retry.');
-            setTasks([]);
-        } finally {
+            if (!silent) {
+                Alert.alert('Error', 'Could not load tasks from server. Pull down to retry.');
+            }
+            if (!silent) setTasks([]);
             setLoading(false);
+        } finally {
+            if (!silent) setRefreshing(false);
         }
     }, [dateKey, selectedDate]);
 
@@ -173,8 +179,8 @@ export default function CalendarTasksScreen() {
 
     //------This Function handles the Save Task---------
     async function saveTask() {
-        if (!newTaskTitle.trim()) {
-            Alert.alert('Required', 'Enter a task title');
+        if (saving || !newTaskTitle.trim()) {
+            if (!newTaskTitle.trim()) Alert.alert('Required', 'Enter a task title');
             return;
         }
 
@@ -209,7 +215,7 @@ export default function CalendarTasksScreen() {
             setShowComposer(false);
 
             Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
-            await loadTasks();
+            await loadTasks(true);
         } catch (error: any) {
             console.error('[CalendarTasks] save failed:', error?.response?.data || error?.message);
             Alert.alert('Error', 'Could not save task. Please try again.');
@@ -221,7 +227,7 @@ export default function CalendarTasksScreen() {
     //------This Function handles the Toggle Task---------
     async function toggleTask(id: string) {
         const task = tasks.find((t) => t.id === id);
-        if (!task) return;
+        if (!task || loadingId) return;
 
         setLoadingId(id);
         try {
@@ -239,28 +245,29 @@ export default function CalendarTasksScreen() {
             }
 
             Haptics.selectionAsync();
-            await loadTasks();
+            await loadTasks(true);
         } catch (error: any) {
             console.error('[CalendarTasks] toggle failed:', error?.response?.data || error?.message);
             Alert.alert('Error', 'Could not update task. Please try again.');
         } finally {
-            setLoadingId(null);
+            if (loadingId === id) setLoadingId(null);
         }
     }
 
     //------This Function handles the Delete Task---------
     async function deleteTask(id: string) {
+        if (loadingId) return;
         setLoadingId(id);
         try {
             await api.delete(`/reminders/${id}`);
             await notificationService.cancelTaskNotification(id);
             Haptics.selectionAsync();
-            await loadTasks();
+            await loadTasks(true);
         } catch (error: any) {
             console.error('[CalendarTasks] delete failed:', error?.response?.data || error?.message);
             Alert.alert('Error', 'Could not remove task. Please try again.');
         } finally {
-            setLoadingId(null);
+            if (loadingId === id) setLoadingId(null);
         }
     }
 
@@ -306,7 +313,17 @@ export default function CalendarTasksScreen() {
                 </View>
             ) : (
                 <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : undefined} style={s.flex}>
-                    <ScrollView contentContainerStyle={s.content} showsVerticalScrollIndicator={false}>
+                    <ScrollView
+                        contentContainerStyle={s.content}
+                        showsVerticalScrollIndicator={false}
+                        refreshControl={
+                            <RefreshControl
+                                refreshing={refreshing}
+                                onRefresh={() => loadTasks(false)}
+                                tintColor={colors.textMuted}
+                            />
+                        }
+                    >
                         <View style={s.heroCard}>
                             <View style={s.heroTop}>
                                 <View>
