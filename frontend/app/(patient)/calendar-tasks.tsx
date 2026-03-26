@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import React, { useCallback, useMemo, useState } from 'react';
 import {
     View,
     Text,
@@ -10,14 +10,31 @@ import {
     KeyboardAvoidingView,
     Platform,
     ActivityIndicator,
+    RefreshControl,
 } from 'react-native';
-import { useLocalSearchParams, useRouter } from 'expo-router';
+import { useLocalSearchParams, useRouter, useFocusEffect } from 'expo-router';
 import * as Haptics from 'expo-haptics';
-import AsyncStorage from '@react-native-async-storage/async-storage';
+import { parseISO, isSameDay as dfIsSameDay } from 'date-fns';
 import Header from '../../src/components/Header';
 import Screen from '../../src/components/Screen';
+import api from '../../src/services/api';
 import { colors, fonts, spacing, radius } from '../../src/theme';
 import { Ionicons } from '@expo/vector-icons';
+import { notificationService } from '../../src/services/notifications';
+
+type ReminderStatus = 'active' | 'completed' | 'dismissed';
+
+interface Reminder {
+    id: string;
+    title: string;
+    description: string;
+    datetime: string;
+    repeat_pattern: string | null;
+    status: ReminderStatus;
+    created_by: string;
+    source: string;
+    created_at: string;
+}
 
 interface CustomTask {
     id: string;
@@ -95,6 +112,9 @@ export default function CalendarTasksScreen() {
 
     const [tasks, setTasks] = useState<CustomTask[]>([]);
     const [loading, setLoading] = useState(true);
+    const [refreshing, setRefreshing] = useState(false);
+    const [loadingId, setLoadingId] = useState<string | null>(null);
+    const [saving, setSaving] = useState(false);
     const [showComposer, setShowComposer] = useState(false);
     const [filter, setFilter] = useState<TaskFilter>('all');
     const [newTaskTitle, setNewTaskTitle] = useState('');
@@ -102,96 +122,152 @@ export default function CalendarTasksScreen() {
     const [newTaskHour, setNewTaskHour] = useState('09');
     const [newTaskMinute, setNewTaskMinute] = useState('00');
 
-    //------This Function handles the Load Tasks---------
-    const loadTasks = useCallback(async () => {
-        setLoading(true);
-        try {
-            const raw = await AsyncStorage.getItem(`tasks_${dateKey}`);
-            const parsed = raw ? JSON.parse(raw) : [];
-            const safeTasks = Array.isArray(parsed) ? parsed : [];
-            safeTasks.sort((a, b) => toMinutes(a.time) - toMinutes(b.time));
-            setTasks(safeTasks);
-        } catch (error) {
-            console.error('[CalendarTasks] load failed', error);
-            setTasks([]);
-        } finally {
-            setLoading(false);
-        }
-    }, [dateKey]);
-
-    useEffect(() => {
-        loadTasks();
-    }, [loadTasks]);
-
-    //------This Function handles the Persist---------
-    async function persist(nextTasks: CustomTask[]) {
-        //------This Function handles the Sorted---------
-        const sorted = [...nextTasks].sort((a, b) => toMinutes(a.time) - toMinutes(b.time));
-        setTasks(sorted);
-        await AsyncStorage.setItem(`tasks_${dateKey}`, JSON.stringify(sorted));
+    //------This Function maps reminder type from source---------
+    function mapTaskType(source: string): CustomTask['type'] {
+        if (source === 'ai_generated') return 'Reminder';
+        return 'Custom';
     }
+
+    //------This Function converts Reminder to CustomTask---------
+    function reminderToTask(r: Reminder): CustomTask {
+        const dt = parseISO(r.datetime);
+        const time = `${pad(dt.getHours())}:${pad(dt.getMinutes())}`;
+        return {
+            id: r.id,
+            title: r.title,
+            type: mapTaskType(r.source),
+            time,
+            completed: r.status === 'completed',
+            createdAt: r.created_at,
+        };
+    }
+
+    //------This Function filters reminders for selected date---------
+    function isReminderForDate(r: Reminder): boolean {
+        const dt = parseISO(r.datetime);
+        return dfIsSameDay(dt, selectedDate);
+    }
+
+    //------This Function handles the Load Tasks---------
+    const loadTasks = useCallback(async (silent = false) => {
+        if (!silent) setRefreshing(true);
+        try {
+            const res = await api.get('/reminders/', { params: { status: 'all', limit: 200, _t: Date.now() } });
+            const reminders: Reminder[] = res.data || [];
+            const dayReminders = reminders.filter(isReminderForDate);
+            const mapped = dayReminders.map(reminderToTask);
+            mapped.sort((a, b) => toMinutes(a.time) - toMinutes(b.time));
+            setTasks(mapped);
+            setLoading(false);
+        } catch (error: any) {
+            console.error('[CalendarTasks] load failed:', error?.response?.data || error?.message);
+            if (!silent) {
+                Alert.alert('Error', 'Could not load tasks from server. Pull down to retry.');
+            }
+            if (!silent) setTasks([]);
+            setLoading(false);
+        } finally {
+            if (!silent) setRefreshing(false);
+        }
+    }, [dateKey, selectedDate]);
+
+    useFocusEffect(
+        useCallback(() => {
+            loadTasks();
+        }, [loadTasks])
+    );
 
     //------This Function handles the Save Task---------
     async function saveTask() {
-        if (!newTaskTitle.trim()) {
-            Alert.alert('Required', 'Enter a task title');
+        if (saving || !newTaskTitle.trim()) {
+            if (!newTaskTitle.trim()) Alert.alert('Required', 'Enter a task title');
             return;
         }
 
         const parsedHour = clamp(parseInt(newTaskHour || '0', 10) || 0, 0, 23);
         const parsedMinute = clamp(parseInt(newTaskMinute || '0', 10) || 0, 0, 59);
-        const normalizedTime = `${pad(parsedHour)}:${pad(parsedMinute)}`;
 
-        const task: CustomTask = {
-            id: Date.now().toString(),
-            title: newTaskTitle.trim(),
-            type: newTaskType,
-            time: normalizedTime,
-            completed: false,
-            createdAt: new Date().toISOString(),
-        };
+        const reminderDatetime = new Date(
+            selectedDate.getFullYear(),
+            selectedDate.getMonth(),
+            selectedDate.getDate(),
+            parsedHour,
+            parsedMinute,
+            0,
+            0,
+        );
 
+        setSaving(true);
         try {
-            await persist([...tasks, task]);
+            await api.post('/reminders/', {
+                title: newTaskTitle.trim(),
+                description: '',
+                datetime: reminderDatetime.toISOString(),
+                repeat_pattern: null,
+                created_by: 'user',
+                source: 'manual',
+            });
+
             setNewTaskTitle('');
             setNewTaskType('Custom');
             setNewTaskHour('09');
             setNewTaskMinute('00');
             setShowComposer(false);
+
             Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
-        } catch (error) {
-            console.error('[CalendarTasks] save failed', error);
-            Alert.alert('Error', 'Could not save task');
+            await loadTasks(true);
+        } catch (error: any) {
+            console.error('[CalendarTasks] save failed:', error?.response?.data || error?.message);
+            Alert.alert('Error', 'Could not save task. Please try again.');
+        } finally {
+            setSaving(false);
         }
     }
 
     //------This Function handles the Toggle Task---------
     async function toggleTask(id: string) {
-        //------This Function handles the Next Tasks---------
-        const nextTasks = tasks.map((task) => (
-            task.id === id
-                ? { ...task, completed: !task.completed }
-                : task
-        ));
+        const task = tasks.find((t) => t.id === id);
+        if (!task || loadingId) return;
+
+        setLoadingId(id);
         try {
-            await persist(nextTasks);
+            if (task.completed) {
+                await api.put(`/reminders/${id}`, { status: 'active' });
+            } else {
+                await api.post(`/reminders/${id}/complete`);
+            }
+
+            if (!task.completed) {
+                await notificationService.cancelTaskNotification(id);
+            } else {
+                const restored = { ...task, completed: false };
+                await notificationService.scheduleTaskNotification(restored, dateKey);
+            }
+
             Haptics.selectionAsync();
-        } catch (error) {
-            console.error('[CalendarTasks] toggle failed', error);
-            Alert.alert('Error', 'Could not update task');
+            await loadTasks(true);
+        } catch (error: any) {
+            console.error('[CalendarTasks] toggle failed:', error?.response?.data || error?.message);
+            Alert.alert('Error', 'Could not update task. Please try again.');
+        } finally {
+            if (loadingId === id) setLoadingId(null);
         }
     }
 
     //------This Function handles the Delete Task---------
     async function deleteTask(id: string) {
-        //------This Function handles the Next Tasks---------
-        const nextTasks = tasks.filter((task) => task.id !== id);
+        if (loadingId) return;
+        setLoadingId(id);
         try {
-            await persist(nextTasks);
+            await api.delete(`/reminders/${id}`);
+            await notificationService.cancelTaskNotification(id);
             Haptics.selectionAsync();
-        } catch (error) {
-            console.error('[CalendarTasks] delete failed', error);
-            Alert.alert('Error', 'Could not remove task');
+            await loadTasks(true);
+        } catch (error: any) {
+            console.error('[CalendarTasks] delete failed:', error?.response?.data || error?.message);
+            Alert.alert('Error', 'Could not remove task. Please try again.');
+        } finally {
+            if (loadingId === id) setLoadingId(null);
         }
     }
 
@@ -237,7 +313,17 @@ export default function CalendarTasksScreen() {
                 </View>
             ) : (
                 <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : undefined} style={s.flex}>
-                    <ScrollView contentContainerStyle={s.content} showsVerticalScrollIndicator={false}>
+                    <ScrollView
+                        contentContainerStyle={s.content}
+                        showsVerticalScrollIndicator={false}
+                        refreshControl={
+                            <RefreshControl
+                                refreshing={refreshing}
+                                onRefresh={() => loadTasks(false)}
+                                tintColor={colors.textMuted}
+                            />
+                        }
+                    >
                         <View style={s.heroCard}>
                             <View style={s.heroTop}>
                                 <View>
@@ -351,9 +437,13 @@ export default function CalendarTasksScreen() {
                                     />
                                 </View>
 
-                                <TouchableOpacity style={s.saveBtn} onPress={saveTask} activeOpacity={0.9}>
-                                    <Ionicons name="save-outline" size={16} color={colors.bg} />
-                                    <Text style={s.saveBtnText}>Save Task</Text>
+                                <TouchableOpacity style={[s.saveBtn, saving && s.btnDisabled]} onPress={saveTask} activeOpacity={0.9} disabled={saving}>
+                                    {saving ? (
+                                        <ActivityIndicator size="small" color={colors.bg} />
+                                    ) : (
+                                        <Ionicons name="save-outline" size={16} color={colors.bg} />
+                                    )}
+                                    <Text style={s.saveBtnText}>{saving ? 'Saving...' : 'Save Task'}</Text>
                                 </TouchableOpacity>
                             </View>
                         )}
@@ -379,6 +469,7 @@ export default function CalendarTasksScreen() {
                                 {visibleTasks.map((task) => {
                                     const meta = getTaskMeta(task.type);
                                     const isDone = task.completed;
+                                    const isLoading = loadingId === task.id;
                                     return (
                                         <View key={task.id} style={[s.taskCard, isDone && s.taskCardDone]}>
                                             <View style={s.taskTop}>
@@ -416,26 +507,36 @@ export default function CalendarTasksScreen() {
 
                                             <View style={s.actionsRow}>
                                                 <TouchableOpacity
-                                                    style={[s.toggleBtn, isDone && s.toggleBtnDone]}
+                                                    style={[s.toggleBtn, isDone && s.toggleBtnDone, isLoading && s.btnDisabled]}
                                                     onPress={() => toggleTask(task.id)}
                                                     activeOpacity={0.9}
+                                                    disabled={isLoading}
                                                 >
-                                                    <Ionicons
-                                                        name={isDone ? 'arrow-undo-outline' : 'checkmark-outline'}
-                                                        size={15}
-                                                        color={isDone ? colors.textPrimary : colors.bg}
-                                                    />
+                                                    {isLoading ? (
+                                                        <ActivityIndicator size="small" color={isDone ? colors.textPrimary : colors.bg} />
+                                                    ) : (
+                                                        <Ionicons
+                                                            name={isDone ? 'arrow-undo-outline' : 'checkmark-outline'}
+                                                            size={15}
+                                                            color={isDone ? colors.textPrimary : colors.bg}
+                                                        />
+                                                    )}
                                                     <Text style={[s.toggleBtnText, isDone && s.toggleBtnTextDone]}>
                                                         {isDone ? 'Mark Pending' : 'Mark Done'}
                                                     </Text>
                                                 </TouchableOpacity>
 
                                                 <TouchableOpacity
-                                                    style={s.deleteBtn}
+                                                    style={[s.deleteBtn, isLoading && s.btnDisabled]}
                                                     onPress={() => deleteTask(task.id)}
                                                     activeOpacity={0.85}
+                                                    disabled={isLoading}
                                                 >
-                                                    <Ionicons name="trash-outline" size={16} color={colors.textMuted} />
+                                                    {isLoading ? (
+                                                        <ActivityIndicator size="small" color={colors.textMuted} />
+                                                    ) : (
+                                                        <Ionicons name="trash-outline" size={16} color={colors.textMuted} />
+                                                    )}
                                                 </TouchableOpacity>
                                             </View>
                                         </View>
@@ -866,5 +967,8 @@ const s = StyleSheet.create({
         backgroundColor: colors.surface,
         alignItems: 'center',
         justifyContent: 'center',
+    },
+    btnDisabled: {
+        opacity: 0.5,
     },
 });

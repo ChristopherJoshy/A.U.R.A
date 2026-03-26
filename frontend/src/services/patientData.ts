@@ -1,6 +1,7 @@
 import api from './api';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { pedometerService, StepData } from './pedometer';
+import { notificationService } from './notifications';
 
 export interface PatientProfile {
     condition: string;
@@ -64,6 +65,7 @@ class PatientDataService {
             }
             if (data.medications) {
                 await AsyncStorage.setItem('medications', JSON.stringify(data.medications));
+                await notificationService.syncMedicationNotifications(data.medications);
             }
             if (data.caregivers) {
                 await AsyncStorage.setItem('caregivers', JSON.stringify(data.caregivers));

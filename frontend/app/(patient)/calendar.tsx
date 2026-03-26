@@ -7,9 +7,10 @@ import {
     ScrollView,
     ActivityIndicator,
 } from 'react-native';
-import { useRouter } from 'expo-router';
+import { useRouter, useFocusEffect } from 'expo-router';
 import * as Haptics from 'expo-haptics';
 import AsyncStorage from '@react-native-async-storage/async-storage';
+import { parseISO, isSameDay as dfIsSameDay } from 'date-fns';
 import { useAuth } from '../../src/context/auth';
 import api from '../../src/services/api';
 import Screen from '../../src/components/Screen';
@@ -34,13 +35,18 @@ interface JournalEntry {
     created_at: string;
 }
 
-interface CustomTask {
+type ReminderStatus = 'active' | 'completed' | 'dismissed';
+
+interface Reminder {
     id: string;
     title: string;
-    type: 'Medication' | 'Activity' | 'Reminder' | 'Custom';
-    time: string;
-    completed: boolean;
-    createdAt: string;
+    description: string;
+    datetime: string;
+    repeat_pattern: string | null;
+    status: ReminderStatus;
+    created_by: string;
+    source: string;
+    created_at: string;
 }
 
 type CalendarRoute = '/(patient)/calendar-medications' | '/(patient)/calendar-tasks' | '/(patient)/calendar-journal';
@@ -91,7 +97,7 @@ export default function CalendarScreen() {
 
     const [meds, setMeds] = useState<Med[]>([]);
     const [journalEntries, setJournalEntries] = useState<JournalEntry[]>([]);
-    const [customTasks, setCustomTasks] = useState<CustomTask[]>([]);
+    const [reminders, setReminders] = useState<Reminder[]>([]);
     const [steps, setSteps] = useState(0);
     const [loading, setLoading] = useState(true);
 
@@ -189,51 +195,47 @@ export default function CalendarScreen() {
             return;
         }
         setLoading(true);
-        try {
-            const [medsRes, journalRes] = await Promise.allSettled([
-                api.get('/medications/'),
-                api.get('/journal/'),
-            ]);
-            if (medsRes.status === 'fulfilled') {
-                setMeds(medsRes.value.data || []);
-            }
-            if (journalRes.status === 'fulfilled') {
-                setJournalEntries(journalRes.value.data || []);
-            }
-        } catch (error) {
-            console.error('[Calendar] failed to load overview data', error);
-        } finally {
-            setLoading(false);
+        const [medsRes, journalRes, remindersRes] = await Promise.allSettled([
+            api.get('/medications/'),
+            api.get('/journal/'),
+            api.get('/reminders/', { params: { status: 'all', limit: 200 } }),
+        ]);
+        if (medsRes.status === 'fulfilled') {
+            setMeds(medsRes.value.data || []);
         }
+        if (journalRes.status === 'fulfilled') {
+            setJournalEntries(journalRes.value.data || []);
+        }
+        if (remindersRes.status === 'fulfilled') {
+            setReminders(remindersRes.value.data || []);
+        }
+        setLoading(false);
     }, [user]);
 
     //------This Function handles the Load Local Data---------
     const loadLocalData = useCallback(async () => {
         try {
-            const [tasksRaw, stepsRaw] = await Promise.all([
-                AsyncStorage.getItem(`tasks_${dateKey}`),
-                AsyncStorage.getItem(`steps_${dateKey}`),
-            ]);
-
-            const parsedTasks = tasksRaw ? JSON.parse(tasksRaw) : [];
-            setCustomTasks(Array.isArray(parsedTasks) ? parsedTasks : []);
+            const stepsRaw = await AsyncStorage.getItem(`steps_${dateKey}`);
             setSteps(stepsRaw ? parseInt(stepsRaw, 10) : 0);
         } catch (error) {
             console.error('[Calendar] failed to load local overview data', error);
-            setCustomTasks([]);
             setSteps(0);
         }
     }, [dateKey]);
 
-    useEffect(() => {
-        if (!authLoading && user) {
-            loadRemoteData();
-        }
-    }, [authLoading, user, loadRemoteData]);
+    useFocusEffect(
+        useCallback(() => {
+            if (!authLoading && user) {
+                loadRemoteData();
+            }
+        }, [authLoading, user, loadRemoteData])
+    );
 
-    useEffect(() => {
-        loadLocalData();
-    }, [loadLocalData]);
+    useFocusEffect(
+        useCallback(() => {
+            loadLocalData();
+        }, [loadLocalData])
+    );
 
     //------This Function handles the Active Meds---------
     const activeMeds = useMemo(() => meds.filter((m) => m.is_active), [meds]);
@@ -244,18 +246,24 @@ export default function CalendarScreen() {
             if (!m.last_taken) {
                 return false;
             }
-            return isSameDay(new Date(m.last_taken), selectedDate);
+            return dfIsSameDay(parseISO(m.last_taken), selectedDate);
         }).length;
     }, [activeMeds, selectedDate]);
 
     //------This Function handles the Journal Count---------
     const journalCount = useMemo(() => {
-        return journalEntries.filter((entry) => isSameDay(new Date(entry.created_at), selectedDate)).length;
+        return journalEntries.filter((entry) => dfIsSameDay(parseISO(entry.created_at), selectedDate)).length;
     }, [journalEntries, selectedDate]);
 
-    const totalTasks = customTasks.length;
+    //------This Function filters reminders for selected date---------
+    function isReminderForDate(r: Reminder): boolean {
+        return dfIsSameDay(parseISO(r.datetime), selectedDate);
+    }
+
+    const dayReminders = useMemo(() => reminders.filter(isReminderForDate), [reminders, selectedDate]);
+    const totalTasks = dayReminders.length;
     //------This Function handles the Completed Tasks---------
-    const completedTasks = customTasks.filter((t) => t.completed).length;
+    const completedTasks = dayReminders.filter((r) => r.status === 'completed').length;
     const totalItems = activeMeds.length + totalTasks;
     const completedItems = medsTakenToday + completedTasks;
     const completionPct = totalItems > 0 ? Math.round((completedItems / totalItems) * 100) : 0;

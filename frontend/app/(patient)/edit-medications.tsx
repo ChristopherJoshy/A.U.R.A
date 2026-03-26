@@ -39,9 +39,9 @@ interface LocalMedication {
 type FrequencyType = 'once' | 'twice' | 'three' | 'as_needed' | 'custom';
 
 const FREQUENCY_OPTIONS: { key: FrequencyType; label: string; times: string[] }[] = [
-  { key: 'once', label: 'Once Daily', times: ['8:00 AM'] },
-  { key: 'twice', label: 'Twice Daily', times: ['8:00 AM', '8:00 PM'] },
-  { key: 'three', label: 'Three Times', times: ['8:00 AM', '2:00 PM', '8:00 PM'] },
+  { key: 'once', label: 'Once Daily', times: ['08:00'] },
+  { key: 'twice', label: 'Twice Daily', times: ['08:00', '20:00'] },
+  { key: 'three', label: 'Three Times', times: ['08:00', '14:00', '20:00'] },
   { key: 'as_needed', label: 'As Needed', times: [] },
   { key: 'custom', label: 'Custom', times: [] },
 ];
@@ -69,8 +69,7 @@ function TimePickerModal({
   const handleConfirm = () => {
     const hour24 = isAM ? (selectedHour === 12 ? 0 : selectedHour) : (selectedHour === 12 ? 12 : selectedHour + 12);
     const timeStr = `${hour24.toString().padStart(2, '0')}:${selectedMinute.toString().padStart(2, '0')}`;
-    const displayTime = formatTime12Hour(timeStr);
-    onConfirm(displayTime);
+    onConfirm(timeStr);
     onClose();
   };
 
@@ -227,9 +226,9 @@ export default function EditMedicationsScreen() {
     for (const opt of FREQUENCY_OPTIONS) {
       if (opt.key !== 'custom' && opt.times.length === times.length) {
         //------This Function handles the Normalized Opt Times---------
-        const normalizedOptTimes = opt.times.map((t: string) => formatTime12Hour(t));
+        const normalizedOptTimes = opt.times;
         //------This Function handles the Normalized Med Times---------
-        const normalizedMedTimes = times.map((t: string) => formatTime12Hour(t));
+        const normalizedMedTimes = times;
         if (normalizedOptTimes.every((t: string) => normalizedMedTimes.includes(t))) {
           matchedFreq = opt.key;
           break;
@@ -238,7 +237,7 @@ export default function EditMedicationsScreen() {
     }
 
     setFrequency(matchedFreq || 'custom');
-    setScheduleTimes(times.map((t: string) => formatTime12Hour(t)));
+    setScheduleTimes(times);
     setNotes(med.notes || '');
     setShowAddForm(true);
   };
@@ -249,7 +248,7 @@ export default function EditMedicationsScreen() {
     //------This Function handles the Freq Option---------
     const freqOption = FREQUENCY_OPTIONS.find(f => f.key === freq);
     if (freqOption && freq !== 'custom') {
-      setScheduleTimes(freqOption.times.map((t: string) => formatTime12Hour(t)));
+      setScheduleTimes(freqOption.times);
     }
   };
 
@@ -439,7 +438,7 @@ export default function EditMedicationsScreen() {
           }
         }
         if (result.times && result.times.length > 0) {
-          setScheduleTimes(result.times.map((t: string) => formatTime12Hour(t)));
+          setScheduleTimes(result.times);
         }
 
         setShowAddForm(true);
@@ -557,7 +556,7 @@ export default function EditMedicationsScreen() {
               <View style={s.timesList}>
                 {scheduleTimes.map((time, index) => (
                   <View key={index} style={s.timeSlot}>
-                    <Text style={s.timeSlotText}>{time}</Text>
+                    <Text style={s.timeSlotText}>{formatTime12Hour(time)}</Text>
                     <TouchableOpacity
                       style={s.timeSlotRemove}
                       onPress={() => handleRemoveTime(index)}
@@ -605,7 +604,7 @@ export default function EditMedicationsScreen() {
                     <View style={s.previewTimes}>
                       {scheduleTimes.map((t, i) => (
                         <View key={i} style={s.previewTimeBadge}>
-                          <Text style={s.previewTimeText}>{t}</Text>
+                          <Text style={s.previewTimeText}>{formatTime12Hour(t)}</Text>
                         </View>
                       ))}
                     </View>
