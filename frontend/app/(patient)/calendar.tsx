@@ -10,6 +10,7 @@ import {
 import { useRouter, useFocusEffect } from 'expo-router';
 import * as Haptics from 'expo-haptics';
 import AsyncStorage from '@react-native-async-storage/async-storage';
+import { parseISO, isSameDay as dfIsSameDay } from 'date-fns';
 import { useAuth } from '../../src/context/auth';
 import api from '../../src/services/api';
 import Screen from '../../src/components/Screen';
@@ -34,13 +35,15 @@ interface JournalEntry {
     created_at: string;
 }
 
+type ReminderStatus = 'active' | 'completed' | 'dismissed';
+
 interface Reminder {
     id: string;
     title: string;
     description: string;
     datetime: string;
     repeat_pattern: string | null;
-    status: string;
+    status: ReminderStatus;
     created_by: string;
     source: string;
     created_at: string;
@@ -248,19 +251,18 @@ export default function CalendarScreen() {
             if (!m.last_taken) {
                 return false;
             }
-            return isSameDay(new Date(m.last_taken), selectedDate);
+            return dfIsSameDay(parseISO(m.last_taken), selectedDate);
         }).length;
     }, [activeMeds, selectedDate]);
 
     //------This Function handles the Journal Count---------
     const journalCount = useMemo(() => {
-        return journalEntries.filter((entry) => isSameDay(new Date(entry.created_at), selectedDate)).length;
+        return journalEntries.filter((entry) => dfIsSameDay(parseISO(entry.created_at), selectedDate)).length;
     }, [journalEntries, selectedDate]);
 
     //------This Function filters reminders for selected date---------
     function isReminderForDate(r: Reminder): boolean {
-        const dt = new Date(r.datetime);
-        return isSameDay(dt, selectedDate);
+        return dfIsSameDay(parseISO(r.datetime), selectedDate);
     }
 
     const dayReminders = useMemo(() => reminders.filter(isReminderForDate), [reminders, selectedDate]);
